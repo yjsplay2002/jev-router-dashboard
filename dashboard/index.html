@@ -10,7 +10,7 @@
   <!--
   THESIS: Routing history reads as a calibrated decision ledger, not a generic card dashboard.
   OWN-WORLD: Paper-white work surface, graphite type, cobalt registration rules, and coral exception marks.
-  STORY: Scan aggregate health, follow the chronological routing rail, then open one decision for evidence.
+  STORY: Scan aggregate health, then read the complete live decision ledger without opening individual records.
   FIRST VIEWPORT: Product title and privacy state lead; one compact telemetry strip precedes the live decision rail.
   FORM: Router trace ledger, assigned direction 7, seed d45f7a32.
   FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
@@ -32,14 +32,15 @@
       <button id="refresh" type="button">Refresh</button>
     </section>
     <p id="error" class="error" hidden></p>
-    <section id="runs" class="run-list" aria-live="polite"></section>
+    <p id="announce" class="sr-only" aria-live="polite"></p>
+    <section id="runs" class="run-list"></section>
   </main>
   <template id="runTemplate">
     <article class="run-card">
-      <button class="run-head" type="button" aria-expanded="false">
-        <span class="status-dot"></span><span class="run-title"></span><span class="run-time"></span><span class="chevron">⌄</span>
-      </button>
-      <div class="run-body" hidden></div>
+      <div class="run-head">
+        <span class="status-dot"></span><span class="run-title"></span><span class="run-time"></span>
+      </div>
+      <div class="run-body"></div>
     </article>
   </template>
   <script src="/static/app.js"></script>

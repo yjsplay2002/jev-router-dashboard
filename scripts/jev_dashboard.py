@@ -149,6 +149,8 @@ class RunStore:
         self.root = root.expanduser().resolve()
         self.max_runs = max(1, max_runs)
         self.include_content = include_content
+        self._cache: dict[Path, tuple[int, int, dict[str, object]]] = {}
+        self._cache_lock = threading.Lock()
 
     def _paths(self) -> list[Path]:
         if not self.root.is_dir():
@@ -159,19 +161,43 @@ class RunStore:
 
     def read_path(self, path: Path) -> dict[str, object]:
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            return normalize_run(raw, path, self.include_content)
-        except Exception as exc:  # malformed historical records should not take down the dashboard
-            return {
-                "run_id": path.parent.name,
-                "status": "unreadable",
-                "error": scrub(exc, 300),
-                "started_at": "",
-                "elapsed_seconds": 0,
-                "task_count": 0,
-                "tasks": [],
-                "has_report": False,
-            }
+            stat = path.stat()
+            cache_key = (stat.st_mtime_ns, stat.st_size)
+        except OSError as exc:
+            return self._unreadable(path, exc)
+        with self._cache_lock:
+            cached = self._cache.get(path)
+            if cached and cached[:2] == cache_key:
+                return cached[2]
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                normalized = normalize_run(raw, path, self.include_content)
+                self._cache[path] = (*cache_key, normalized)
+                return normalized
+            except Exception as exc:  # a writer may be replacing run.json while we poll
+                if cached:
+                    stale = dict(cached[2])
+                    stale["stale"] = True
+                    return stale
+                return self._unreadable(path, exc)
+
+    @staticmethod
+    def _unreadable(path: Path, exc: Exception) -> dict[str, object]:
+        try:
+            source_mtime = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+        except OSError:
+            source_mtime = datetime.now(timezone.utc).isoformat()
+        return {
+            "run_id": path.parent.name,
+            "status": "unreadable",
+            "error": scrub(exc, 300),
+            "started_at": "",
+            "elapsed_seconds": 0,
+            "task_count": 0,
+            "tasks": [],
+            "has_report": False,
+            "source_mtime": source_mtime,
+        }
 
     def list(self) -> list[dict[str, object]]:
         return [self.read_path(path) for path in self._paths()]
@@ -250,8 +276,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
         if path == "/api/health":
-            runs = self.server.store.list()
-            self._json({"version": VERSION, "runs_dir": str(self.server.store.root), "run_count": len(runs)})
+            self._json({"version": VERSION, "runs_dir": str(self.server.store.root), "run_count": len(self.server.store._paths())})
             return
         if path == "/api/runs":
             query = parse_qs(parsed.query)

@@ -13,6 +13,7 @@ A local, read-only dashboard for understanding how Jev classified a task, why it
 - requested effort and observed model;
 - status, duration, exit code, token usage, and a redacted result summary;
 - links to Jev's generated local HTML reports.
+- always-expanded task details with automatic live updates as new run records appear.
 
 The dashboard reads existing `~/.config/jev-router/runs/*/run.json` files. It does not replace Jev, modify run data, call external services, or require a database.
 

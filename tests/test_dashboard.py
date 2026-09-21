@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import importlib.util
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -51,6 +52,26 @@ class DashboardTests(unittest.TestCase):
         statuses = {item["status"] for item in dashboard.RunStore(self.root).list()}
         self.assertIn("unreadable", statuses)
 
+    def test_cache_reuses_unchanged_record_and_invalidates_on_write(self):
+        store = dashboard.RunStore(self.root)
+        first = store.list()[0]
+        self.assertIs(first, store.list()[0])
+        run_file = self.root / self.run["run_id"] / "run.json"
+        self.run["status"] = "running"
+        run_file.write_text(json.dumps(self.run) + " ", encoding="utf-8")
+        os.utime(run_file, None)
+        self.assertEqual(store.list()[0]["status"], "running")
+
+    def test_partial_write_uses_last_good_record(self):
+        store = dashboard.RunStore(self.root)
+        first = store.list()[0]
+        run_file = self.root / self.run["run_id"] / "run.json"
+        run_file.write_text("{", encoding="utf-8")
+        os.utime(run_file, None)
+        stale = store.list()[0]
+        self.assertEqual(stale["run_id"], first["run_id"])
+        self.assertTrue(stale["stale"])
+
     def test_rejects_path_traversal(self):
         self.assertIsNone(dashboard.RunStore(self.root).get("../outside"))
 
@@ -72,6 +93,35 @@ class DashboardTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
+
+    def test_live_api_discovers_a_new_run_without_restart(self):
+        server = dashboard.DashboardServer(("127.0.0.1", 0), dashboard.RunStore(self.root))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_port}"
+        try:
+            with urllib.request.urlopen(base + "/api/runs") as response:
+                self.assertEqual(json.load(response)["total"], 1)
+            new_dir = self.root / "20260101T000100Z-e5f6a7b8"
+            new_dir.mkdir()
+            new_run = dict(self.run, run_id=new_dir.name, status="running")
+            (new_dir / "run.json").write_text(json.dumps(new_run), encoding="utf-8")
+            with urllib.request.urlopen(base + "/api/runs") as response:
+                payload = json.load(response)
+                self.assertEqual(payload["total"], 2)
+                self.assertEqual(payload["runs"][0]["run_id"], new_dir.name)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_dashboard_is_always_open_and_polling_does_not_overlap(self):
+        markup = (ROOT / "dashboard" / "index.html").read_text(encoding="utf-8")
+        script = (ROOT / "dashboard" / "app.js").read_text(encoding="utf-8")
+        self.assertNotIn("aria-expanded", markup)
+        self.assertNotIn('class="run-body" hidden', markup)
+        self.assertNotIn("setInterval(", script)
+        self.assertIn("if (poll.inflight)", script)
 
 
 if __name__ == "__main__":

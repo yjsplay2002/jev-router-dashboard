@@ -144,7 +144,7 @@ Controls use a restrained 4px radius and records use 6px. Pills are reserved for
 
 ### Routing Rail
 
-Each run attaches to one persistent 1px blue rail. Status dots encode state at the record level, and probability bars reuse the rail color to connect selection evidence to the overall topology.
+Each run attaches to one persistent 1px blue rail. Every record is fully expanded by default; there is no per-run disclosure control. Status dots encode state at the record level, probability bars reuse the rail color, and live updates insert new records without moving the reader's viewport once they have scrolled into the ledger.
 
 ## Do's and Don'ts
 
