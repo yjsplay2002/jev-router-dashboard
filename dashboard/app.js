@@ -1,24 +1,48 @@
 // SPDX-License-Identifier: Apache-2.0
 const state = { runs: [], query: "", status: "", cards: new Map(), firstLoad: true };
 const poll = { timer: null, inflight: null, delay: 2500, min: 2500, max: 30000 };
+const configState = { current: null, busy: true };
 const $ = (id) => document.getElementById(id);
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const fmt = (n) => new Intl.NumberFormat().format(Number(n || 0));
-const pct = (n) => `${Math.round(Number(n || 0) * 100)}%`;
+const ratio = (n) => { const value = Number(n || 0); return Math.max(0, Math.min(1, value > 1 ? value / 100 : value)); };
+const pct = (n) => `${Math.round(ratio(n) * 100)}%`;
 const elapsed = (n) => Number(n || 0) < 60 ? `${Number(n || 0).toFixed(1)}s` : `${(Number(n || 0) / 60).toFixed(1)}m`;
 const when = (iso) => { const d = new Date(iso); return isNaN(d) ? "Unknown time" : d.toLocaleString(); };
 
 function taskHtml(task) {
   const probs = Object.entries(task.probabilities || {}).sort((a,b) => b[1]-a[1]);
-  const bars = probs.map(([name,value]) => `<div class="prob"><span>${escapeHtml(name)}</span><i><b style="width:${Math.min(100, value*100)}%"></b></i><em>${pct(value)}</em></div>`).join("");
+  const bars = probs.map(([name,value]) => `<div class="prob"><span>${escapeHtml(name)}</span><i><b style="width:${ratio(value)*100}%"></b></i><em>${pct(value)}</em></div>`).join("");
   const usage = task.usage || {};
   return `<section class="task">
     <div class="task-top"><div><small>${escapeHtml(task.category || "unclassified")} · ${escapeHtml(task.difficulty || "unknown")}</small><h3>${escapeHtml(task.title || task.id || "Untitled task")}</h3></div><span class="badge">${escapeHtml(task.status || "unknown")}</span></div>
     <div class="route"><div><small>ROUTED TO</small><strong>${escapeHtml(task.selected_by_jev || task.provider || "—")}</strong></div><div><small>OBSERVED MODEL</small><strong>${escapeHtml(task.actual_model || task.requested_model || "unknown")}</strong></div><div><small>EFFORT</small><strong>${escapeHtml(task.effort || "unknown")}</strong></div><div><small>CONFIDENCE</small><strong>${pct(task.confidence)}</strong></div></div>
     ${task.fallback ? `<p class="notice">Fallback: ${escapeHtml(task.fallback_reason || "unspecified")}</p>` : ""}
-    <div class="detail-grid"><div><h4>Model selection</h4>${bars || "<p>No probability data</p>"}</div><div><h4>Execution</h4><dl><dt>Input</dt><dd>${fmt(usage.input_tokens)}</dd><dt>Output</dt><dd>${fmt(usage.output_tokens)}</dd><dt>Cached</dt><dd>${fmt(usage.cached_input_tokens)}</dd><dt>Elapsed</dt><dd>${elapsed(task.elapsed_seconds)}</dd></dl></div></div>
+    <div class="detail-grid"><div><h4>Candidate probabilities</h4>${bars || "<p>No probability data</p>"}</div><div><h4>Execution</h4><dl><dt>Input</dt><dd>${fmt(usage.input_tokens)}</dd><dt>Output</dt><dd>${fmt(usage.output_tokens)}</dd><dt>Cached</dt><dd>${fmt(usage.cached_input_tokens)}</dd><dt>Elapsed</dt><dd>${elapsed(task.elapsed_seconds)}</dd></dl></div></div>
     ${task.result_summary ? `<section class="result"><h4>Result summary</h4><pre>${escapeHtml(task.result_summary)}</pre></section>` : ""}
   </section>`;
+}
+
+function evidenceFlowHtml(run) {
+  const tasks = run.tasks || [];
+  if (!tasks.length) return "";
+  const rows = tasks.map((task, index) => {
+    const dependencies = task.depends_on?.length ? `After ${task.depends_on.join(", ")}` : "Root task";
+    const decision = task.selected_by_jev || task.provider || "No decision recorded";
+    const requested = task.requested_model || "not recorded";
+    const observed = task.actual_model || "not observed";
+    const candidateScores = Object.entries(task.probabilities || {}).sort((a, b) => b[1] - a[1]).slice(0, 3)
+      .map(([name, value]) => `<span><b>${escapeHtml(name)}</b><em>${pct(value)}</em></span>`).join("");
+    const fallback = task.fallback ? `<p class="flow-exception">Fallback · ${escapeHtml(task.fallback_reason || "reason not recorded")}</p>` : "";
+    return `<article class="evidence-row">
+      <div class="evidence-node prompt-node"><small>RECORDED TASK PROMPT</small><pre>${escapeHtml(task.prompt || "Prompt was not retained in this run.")}</pre></div>
+      <span class="flow-arrow" aria-hidden="true"></span>
+      <div class="evidence-node split-node"><small>TASK ${index + 1} OF ${tasks.length} · ${escapeHtml(dependencies)}</small><h4>${escapeHtml(task.title || task.id || "Untitled task")}</h4><p>${escapeHtml(task.category || "unclassified")} · ${escapeHtml(task.difficulty || "unknown")}</p><dl><dt>Category confidence</dt><dd>${pct(task.category_confidence)}</dd><dt>Difficulty confidence</dt><dd>${pct(task.difficulty_confidence)}</dd></dl></div>
+      <span class="flow-arrow" aria-hidden="true"></span>
+      <div class="evidence-node decision-node"><small>MODEL DECISION</small><h4>${escapeHtml(decision)}</h4><p>Selection confidence ${pct(task.confidence)}</p>${candidateScores ? `<div class="flow-scores">${candidateScores}</div>` : ""}<dl><dt>Requested</dt><dd>${escapeHtml(requested)}</dd><dt>Observed</dt><dd>${escapeHtml(observed)}</dd><dt>Effort</dt><dd>${escapeHtml(task.effort || "unknown")}</dd></dl>${fallback}</div>
+    </article>`;
+  }).join("");
+  return `<section class="evidence-map" aria-label="Prompt, task decomposition, and model decision diagram"><div class="evidence-map-head"><div><h3>Prompt to model</h3><p>Recorded evidence for how this run became ${tasks.length} task${tasks.length === 1 ? "" : "s"} and reached each worker.</p></div><span>${tasks.length} task${tasks.length === 1 ? "" : "s"}</span></div><div class="flow-origin"><small>RUN MANIFEST</small><strong>${escapeHtml(run.run_id)}</strong><span>${escapeHtml(run.router_model || "router model not recorded")}</span></div><div class="evidence-rows">${rows}</div></section>`;
 }
 
 function createCard(run) {
@@ -35,7 +59,7 @@ function updateCard(card, run) {
   card.dataset.search = JSON.stringify(run).toLowerCase();
   card.querySelector(".run-title").textContent = `${run.run_id} · ${run.task_count} task${run.task_count === 1 ? "" : "s"}`;
   card.querySelector(".run-time").textContent = `${when(run.started_at)} · ${elapsed(run.elapsed_seconds)}`;
-  card.querySelector(".run-body").innerHTML = (run.tasks || []).map(taskHtml).join("") + (run.has_report ? `<a class="report" href="/reports/${encodeURIComponent(run.run_id)}" target="_blank" rel="noopener">Open generated report ↗</a>` : "");
+  card.querySelector(".run-body").innerHTML = evidenceFlowHtml(run) + (run.tasks || []).map(taskHtml).join("") + (run.has_report ? `<a class="report" href="/reports/${encodeURIComponent(run.run_id)}" target="_blank" rel="noopener">Open generated report ↗</a>` : "");
 }
 
 function withStableViewport(mutate) {
@@ -124,20 +148,100 @@ function updateStats() {
   Object.entries(values).forEach(([id, value]) => { if ($(id).textContent !== value) $(id).textContent = value; });
 }
 
-async function fetchJson(url, signal) {
-  const response = await fetch(url, { signal, cache: "no-store" });
-  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-  return response.json();
+async function fetchJson(url, options = {}) {
+  const response = await fetch(url, { cache: "no-store", ...options });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || `${response.status} ${response.statusText}`);
+  return payload;
 }
 
 async function loadRuns(signal) {
-  const data = await fetchJson("/api/runs?limit=500", signal);
+  const data = await fetchJson("/api/runs?limit=500", { signal });
   reconcile(data.runs || []);
 }
 
 async function loadHealth(signal) {
-  const health = await fetchJson("/api/health", signal);
+  const health = await fetchJson("/api/health", { signal });
   $("subtitle").textContent = health.runs_dir;
+}
+
+function configPayload() {
+  return {
+    fallback_provider: $("fallbackProvider").value,
+    fallback_model: $("fallbackModel").value.trim(),
+    fallback_effort: $("fallbackEffort").value,
+  };
+}
+
+function updateSaveState() {
+  const controls = [$("fallbackProvider"), $("fallbackModel"), $("fallbackEffort")];
+  controls.forEach(control => { control.disabled = configState.busy || !configState.current; });
+  const changed = configState.current && JSON.stringify(configPayload()) !== JSON.stringify(configState.current);
+  $("saveSettings").disabled = configState.busy || !changed || !$("settingsForm").checkValidity();
+  if (!configState.busy && changed) {
+    $("settingsState").textContent = "Unsaved changes";
+    $("settingsState").dataset.tone = "pending";
+  } else if (!configState.busy && configState.current) {
+    $("settingsState").textContent = "Config synced";
+    $("settingsState").dataset.tone = "ready";
+  }
+}
+
+function renderConfig(config) {
+  const provider = $("fallbackProvider");
+  const effort = $("fallbackEffort");
+  provider.replaceChildren(...(config.providers || []).map(value => new Option(value, value)));
+  effort.replaceChildren(...(config.efforts || []).map(value => new Option(value, value)));
+  provider.value = config.fallback_provider || "";
+  $("fallbackModel").value = config.fallback_model || "";
+  effort.value = config.fallback_effort || "";
+  configState.current = configPayload();
+  configState.busy = false;
+  $("confidenceThreshold").textContent = pct(config.confidence_threshold);
+  $("configPath").textContent = `Writing only fallback fields in ${config.config_path}`;
+  updateSaveState();
+}
+
+async function loadConfig() {
+  configState.busy = true;
+  updateSaveState();
+  try {
+    renderConfig(await fetchJson("/api/config"));
+  } catch (error) {
+    configState.busy = false;
+    $("settingsState").textContent = "Config unavailable";
+    $("settingsState").dataset.tone = "error";
+    $("settingsMessage").textContent = `${error.message}. Start the dashboard with --config pointing to Jev's config.json.`;
+    $("settingsMessage").dataset.tone = "error";
+    updateSaveState();
+  }
+}
+
+async function saveConfig(event) {
+  event.preventDefault();
+  if (!$("settingsForm").reportValidity()) return;
+  configState.busy = true;
+  $("settingsState").textContent = "Saving...";
+  $("settingsState").dataset.tone = "pending";
+  $("settingsMessage").textContent = "";
+  updateSaveState();
+  try {
+    const config = await fetchJson("/api/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(configPayload()),
+    });
+    renderConfig(config);
+    $("settingsMessage").textContent = "Fallback policy saved. New routing tasks will use it immediately.";
+    $("settingsMessage").dataset.tone = "ready";
+  } catch (error) {
+    configState.busy = false;
+    $("settingsMessage").textContent = `${error.message}. Review the fields and try again.`;
+    $("settingsMessage").dataset.tone = "error";
+    updateSaveState();
+    $("settingsState").textContent = "Save failed";
+    $("settingsState").dataset.tone = "error";
+  }
 }
 
 function schedule() {
@@ -170,5 +274,8 @@ function tick(manual = false) {
 $("search").addEventListener("input", event => { state.query = event.target.value; applyFilters(); });
 $("status").addEventListener("change", event => { state.status = event.target.value; applyFilters(); });
 $("refresh").addEventListener("click", () => tick(true));
+$("settingsForm").addEventListener("input", updateSaveState);
+$("settingsForm").addEventListener("change", updateSaveState);
+$("settingsForm").addEventListener("submit", saveConfig);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(true); });
-loadHealth().catch(() => {}).finally(() => tick(false));
+Promise.allSettled([loadHealth(), loadConfig()]).finally(() => tick(false));

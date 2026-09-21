@@ -1,6 +1,6 @@
 # Jev Router Dashboard
 
-A local, read-only dashboard for understanding how Jev classified a task, why it selected a provider/model/effort level, and what the routed worker actually did.
+A local dashboard for understanding how Jev classified a task, why it selected a provider/model/effort level, what the routed worker actually did, and which fallback policy the next task will use.
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
 ![Runtime](https://img.shields.io/badge/runtime-Python%203.10%2B-66f2c2)
@@ -9,13 +9,15 @@ A local, read-only dashboard for understanding how Jev classified a task, why it
 
 - difficulty and category classification;
 - provider/model selection confidence and probability distribution;
+- an always-open `prompt → task/dependencies → model decision` evidence diagram for every run;
 - fallback decisions and reasons;
 - requested effort and observed model;
 - status, duration, exit code, token usage, and a redacted result summary;
 - links to Jev's generated local HTML reports.
 - always-expanded task details with automatic live updates as new run records appear.
+- an always-open fallback policy editor for provider, model, and reasoning effort.
 
-The dashboard reads existing `~/.config/jev-router/runs/*/run.json` files. It does not replace Jev, modify run data, call external services, or require a database.
+Probability records are normalized whether Jev stored them as fractions (`0.73`) or percentages (`73`), so both labels and gauges render as `73%`. The dashboard reads existing `~/.config/jev-router/runs/*/run.json` files and never modifies run data. Its only write operation atomically updates `fallback_provider`, `fallback_model`, and `fallback_effort` in Jev's local `config.json`; unrelated settings are preserved. It does not call external services or require a database.
 
 ## Run locally
 
@@ -33,9 +35,10 @@ Useful options:
 
 ```text
 --runs-dir PATH       Read another Jev run directory
+--config PATH          Read and update another Jev config.json
 --port PORT           Use another localhost port
 --max-runs N          Limit history (default: 500)
---include-content     Include sanitized full prompts/results in the API
+--include-content     Include full sanitized results in the API
 --open                Open the default browser
 ```
 
@@ -48,14 +51,15 @@ On Windows, a typical destination is `%USERPROFILE%\.codex\skills\jev-router`.
 ## Privacy and security
 
 - Binds only to loopback and refuses public/network binds.
-- Read-only HTTP surface; write methods return `405`.
-- Omits task prompts by default.
+- Run history and reports remain read-only. Only `PUT /api/config` is writable, and only the three fallback fields are accepted.
+- Config writes require same-origin JSON requests, validate enabled providers and efforts, and use atomic file replacement.
+- Displays sanitized recorded task prompts in the local evidence diagram; common secret patterns and home-directory paths are redacted.
 - Truncates and scrubs common API keys, bearer tokens, passwords, secrets, GitHub tokens, and home-directory paths from displayed summaries.
 - Serves no CDN assets, analytics, fonts, or telemetry.
 - Validates run IDs and report paths to prevent directory traversal.
 - Sends restrictive CSP, frame, MIME-sniffing, referrer, and cache headers.
 
-Run records can still contain sensitive data on disk. Never commit `~/.config/jev-router/runs` or publish screenshots without reviewing them.
+Run records and prompts can still contain sensitive data on disk. Never commit `~/.config/jev-router/runs` or publish screenshots without reviewing them.
 
 ## Test
 

@@ -35,6 +35,6 @@ To inspect routing history visually, run:
 python scripts/jev_dashboard.py --open
 ```
 
-The bundled dashboard is read-only, dependency-free, and binds to `127.0.0.1:8787`. It reads the standard Jev runs directory, tolerates older or malformed records, and hides full prompts by default. Use `--runs-dir <path>` for a custom location. Use `--include-content` only when full sanitized prompt and result text is genuinely needed locally.
+The bundled dashboard is dependency-free and binds to `127.0.0.1:8787`. It reads the standard Jev runs directory, tolerates older or malformed records, shows sanitized task prompts and task-to-model evidence flows, and can update only Jev's fallback provider/model/effort fields through its always-open policy editor. Run records stay read-only. Use `--runs-dir <path>` or `--config <path>` for custom locations. Use `--include-content` only when full sanitized result text is genuinely needed locally.
 
 Never expose the dashboard on a non-loopback interface. The script deliberately refuses such binds.

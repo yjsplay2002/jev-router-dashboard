@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Local, read-only dashboard for Jev router run history."""
+"""Local dashboard for Jev router history and fallback policy."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import os
 import re
 import socket
 import sys
+import tempfile
 import threading
 import webbrowser
 from datetime import datetime, timezone
@@ -19,7 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 HERE = Path(__file__).resolve().parent.parent
 STATIC_ROOT = HERE / "dashboard"
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,160}$")
@@ -36,6 +37,13 @@ def default_runs_dir() -> Path:
     if home:
         return Path(home).expanduser().resolve() / "runs"
     return (Path.home() / ".config" / "jev-router" / "runs").resolve()
+
+
+def default_config_path() -> Path:
+    home = os.environ.get("JEV_ROUTER_HOME")
+    if home:
+        return Path(home).expanduser().resolve() / "config.json"
+    return (Path.home() / ".config" / "jev-router" / "config.json").resolve()
 
 
 def scrub(value: object, limit: int = 600) -> str:
@@ -64,6 +72,14 @@ def safe_number(value: object, default: float = 0) -> float:
         return default
 
 
+def normalize_probability(value: object) -> float:
+    """Accept Jev probability records expressed as either 0..1 or 0..100."""
+    number = safe_number(value)
+    if number > 1:
+        number /= 100
+    return max(0, min(1, number))
+
+
 def normalize_usage(raw: object) -> dict[str, int]:
     if not isinstance(raw, dict):
         raw = {}
@@ -90,25 +106,29 @@ def normalize_task(task: object, include_content: bool = False) -> dict[str, obj
         "provider": scrub(task.get("provider") or execution.get("provider"), 80),
         "effort": scrub(route.get("effort") or execution.get("requested_effort"), 80),
         "selected_by_jev": scrub(route.get("selected_by_jev"), 120),
-        "confidence": max(0, min(1, safe_number(route.get("confidence")))),
-        "difficulty_confidence": max(0, min(1, safe_number(route.get("difficulty_confidence")))),
-        "category_confidence": max(0, min(1, safe_number(route.get("category_confidence")))),
+        "confidence": normalize_probability(route.get("confidence")),
+        "difficulty_confidence": normalize_probability(route.get("difficulty_confidence")),
+        "category_confidence": normalize_probability(route.get("category_confidence")),
         "probabilities": {
-            scrub(key, 80): max(0, min(1, safe_number(value)))
+            scrub(key, 80): normalize_probability(value)
             for key, value in probabilities.items()
         },
+        "prompt": scrub(task.get("prompt"), 5000),
+        "depends_on": [scrub(value, 160) for value in task.get("depends_on", []) if isinstance(value, str)]
+        if isinstance(task.get("depends_on"), list) else [],
         "fallback": bool(route.get("fallback")),
         "fallback_reason": scrub(route.get("fallback_reason"), 160),
+        "model_source": scrub(route.get("model_source"), 120),
+        "effort_source": scrub(route.get("effort_source"), 120),
         "status": scrub(execution.get("status") or task.get("status"), 80),
         "actual_model": scrub(execution.get("actual_model"), 160),
-        "requested_model": scrub(execution.get("requested_model"), 160),
+        "requested_model": scrub(execution.get("requested_model") or route.get("requested_model") or task.get("model"), 160),
         "elapsed_seconds": max(0, safe_number(execution.get("elapsed_seconds"))),
         "exit_code": execution.get("exit_code"),
         "usage": normalize_usage(execution.get("usage")),
         "result_summary": scrub(result, 600),
     }
     if include_content:
-        normalized["prompt"] = scrub(task.get("prompt"), 5000)
         normalized["result"] = scrub(result, 10000)
     return normalized
 
@@ -227,12 +247,101 @@ class RunStore:
         return report if report.is_file() and report.stat().st_size <= 8 * 1024 * 1024 else None
 
 
+class ConfigStore:
+    """Expose and update only the fallback policy fields in Jev's config."""
+
+    def __init__(self, path: Path):
+        self.path = path.expanduser().resolve()
+        self._lock = threading.Lock()
+
+    def _read(self) -> dict[str, object]:
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError as exc:
+            raise ValueError(f"Jev config not found: {self.path}") from exc
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Could not read Jev config: {exc}") from exc
+        if not isinstance(raw, dict):
+            raise ValueError("Jev config must contain a JSON object")
+        return raw
+
+    @staticmethod
+    def _options(raw: dict[str, object]) -> tuple[list[str], list[str]]:
+        provider_config = raw.get("providers")
+        providers = []
+        if isinstance(provider_config, dict):
+            providers = [
+                str(name) for name, details in provider_config.items()
+                if isinstance(details, dict) and details.get("enabled", True) is not False
+            ]
+        efforts = raw.get("efforts")
+        allowed_efforts = [str(value) for value in efforts] if isinstance(efforts, list) else []
+        return providers, allowed_efforts
+
+    def public(self, raw: dict[str, object] | None = None) -> dict[str, object]:
+        raw = raw or self._read()
+        providers, efforts = self._options(raw)
+        return {
+            "fallback_provider": raw.get("fallback_provider", ""),
+            "fallback_model": raw.get("fallback_model") or "",
+            "fallback_effort": raw.get("fallback_effort") or "",
+            "providers": providers,
+            "efforts": efforts,
+            "confidence_threshold": safe_number(raw.get("confidence_threshold")),
+            "config_path": scrub(self.path),
+        }
+
+    def update(self, patch: object) -> dict[str, object]:
+        if not isinstance(patch, dict):
+            raise ValueError("Request body must be a JSON object")
+        allowed = {"fallback_provider", "fallback_model", "fallback_effort"}
+        if set(patch) != allowed:
+            raise ValueError("Provide fallback_provider, fallback_model, and fallback_effort")
+        with self._lock:
+            raw = self._read()
+            providers, efforts = self._options(raw)
+            provider = patch.get("fallback_provider")
+            model = patch.get("fallback_model")
+            effort = patch.get("fallback_effort")
+            if not isinstance(provider, str) or provider not in providers:
+                raise ValueError("Choose an enabled provider")
+            if not isinstance(model, str) or not model.strip() or model.lstrip().startswith("-"):
+                raise ValueError("Model must be a non-empty model ID and cannot begin with '-'")
+            if not isinstance(effort, str) or effort not in efforts:
+                raise ValueError("Choose an enabled reasoning effort")
+            raw.update({
+                "fallback_provider": provider,
+                "fallback_model": model.strip(),
+                "fallback_effort": effort,
+            })
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            temp_path: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w", encoding="utf-8", dir=self.path.parent,
+                    prefix=f".{self.path.name}.", suffix=".tmp", delete=False,
+                ) as handle:
+                    temp_path = Path(handle.name)
+                    json.dump(raw, handle, ensure_ascii=False, indent=2)
+                    handle.write("\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temp_path, self.path)
+            except OSError as exc:
+                raise ValueError(f"Could not write Jev config: {exc}") from exc
+            finally:
+                if temp_path and temp_path.exists():
+                    temp_path.unlink(missing_ok=True)
+            return self.public(raw)
+
+
 class DashboardServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address: tuple[str, int], store: RunStore):
+    def __init__(self, address: tuple[str, int], store: RunStore, config: ConfigStore | None = None):
         self.store = store
+        self.config = config or ConfigStore(default_config_path())
         super().__init__(address, DashboardHandler)
 
 
@@ -278,6 +387,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/api/health":
             self._json({"version": VERSION, "runs_dir": str(self.server.store.root), "run_count": len(self.server.store._paths())})
             return
+        if path == "/api/config":
+            try:
+                self._json(self.server.config.public())
+            except ValueError as exc:
+                self._json({"error": scrub(exc, 300)}, HTTPStatus.SERVICE_UNAVAILABLE)
+            return
         if path == "/api/runs":
             query = parse_qs(parsed.query)
             limit = min(500, max(1, int(query.get("limit", ["200"])[0])))
@@ -311,10 +426,35 @@ class DashboardHandler(BaseHTTPRequestHandler):
         types = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8"}
         self._send(200, target.read_bytes(), types.get(target.suffix, "application/octet-stream"))
 
-    def do_POST(self) -> None:  # noqa: N802
-        self._json({"error": "Read-only server"}, HTTPStatus.METHOD_NOT_ALLOWED)
+    def do_PUT(self) -> None:  # noqa: N802
+        if not self._host_allowed():
+            self._json({"error": "Host must be loopback"}, HTTPStatus.FORBIDDEN)
+            return
+        path = unquote(urlparse(self.path).path)
+        if path != "/api/config":
+            self._json({"error": "Method not allowed"}, HTTPStatus.METHOD_NOT_ALLOWED)
+            return
+        if self.headers.get_content_type() != "application/json":
+            self._json({"error": "Content-Type must be application/json"}, HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length < 1 or length > 16 * 1024:
+            self._json({"error": "Request body must be between 1 byte and 16 KiB"}, HTTPStatus.BAD_REQUEST)
+            return
+        try:
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            self._json(self.server.config.update(payload))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._json({"error": "Request body must be valid UTF-8 JSON"}, HTTPStatus.BAD_REQUEST)
+        except ValueError as exc:
+            self._json({"error": scrub(exc, 300)}, HTTPStatus.BAD_REQUEST)
 
-    do_PUT = do_POST
+    def do_POST(self) -> None:  # noqa: N802
+        self._json({"error": "Method not allowed"}, HTTPStatus.METHOD_NOT_ALLOWED)
+
     do_PATCH = do_POST
     do_DELETE = do_POST
 
@@ -322,10 +462,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Browse Jev routing history on localhost")
     parser.add_argument("--runs-dir", type=Path, default=default_runs_dir())
+    parser.add_argument("--config", type=Path, default=default_config_path(), help="Path to Jev config.json")
     parser.add_argument("--bind", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument("--max-runs", type=int, default=500)
-    parser.add_argument("--include-content", action="store_true", help="Include sanitized prompts and full results in API responses")
+    parser.add_argument("--include-content", action="store_true", help="Include full sanitized results in API responses")
     parser.add_argument("--open", action="store_true", dest="open_browser")
     return parser.parse_args(argv)
 
@@ -337,13 +478,14 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     store = RunStore(args.runs_dir, args.max_runs, args.include_content)
     try:
-        server = DashboardServer((args.bind, args.port), store)
+        server = DashboardServer((args.bind, args.port), store, ConfigStore(args.config))
     except OSError as exc:
         print(f"Could not start dashboard: {exc}", file=sys.stderr)
         return 1
     url = f"http://{args.bind}:{server.server_port}"
     print(f"Jev dashboard: {url}")
     print(f"Runs: {store.root}")
+    print(f"Config: {server.config.path}")
     print("Press Ctrl+C to stop.")
     if args.open_browser:
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()

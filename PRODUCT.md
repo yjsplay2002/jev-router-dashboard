@@ -30,9 +30,10 @@ The dashboard runs beside the Jev CLI on a developer workstation and reads `~/.c
 
 - Read existing Jev `run.json` files without modifying them.
 - Display classification, routing probabilities, provider/model/effort, fallback, status, duration, and token usage.
+- Display sanitized recorded prompts, task dependencies, and model decisions as an always-open evidence flow.
 - Bind to loopback only and make no outbound requests.
 - Tolerate missing, historical, or malformed records.
-- Keep full prompts hidden unless explicitly requested.
+- Keep recorded prompts visible in the local-only evidence flow while redacting common secret patterns.
 - Package the companion Codex skill and project under Apache-2.0.
 
 ## Brand Commitments

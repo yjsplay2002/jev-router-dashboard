@@ -34,16 +34,44 @@ class DashboardTests(unittest.TestCase):
             }]
         }
         (run_dir / "run.json").write_text(json.dumps(self.run), encoding="utf-8")
+        self.config_path = self.root / "config.json"
+        self.config = {
+            "confidence_threshold": 0.55,
+            "efforts": ["low", "medium", "high"],
+            "fallback_provider": "claude",
+            "fallback_model": "claude-default",
+            "fallback_effort": "high",
+            "secret_setting": "preserve-me",
+            "providers": {
+                "claude": {"enabled": True, "model": None},
+                "codex": {"enabled": True, "model": None},
+                "grok": {"enabled": False, "model": None},
+            },
+        }
+        self.config_path.write_text(json.dumps(self.config), encoding="utf-8")
 
     def tearDown(self):
         self.temp.cleanup()
 
-    def test_normalizes_real_schema_and_omits_prompt(self):
+    def test_normalizes_real_schema_and_includes_sanitized_prompt(self):
         item = dashboard.RunStore(self.root).list()[0]
         self.assertEqual(item["tasks"][0]["selected_by_jev"], "claude_medium")
         self.assertEqual(item["tasks"][0]["usage"]["total_tokens"], 10)
-        self.assertNotIn("prompt", item["tasks"][0])
+        self.assertEqual(item["tasks"][0]["prompt"], "secret prompt")
         self.assertIn("<redacted>", item["tasks"][0]["result_summary"])
+
+    def test_probability_scales_and_task_dependencies_are_normalized(self):
+        task = self.run["tasks"][0]
+        task["depends_on"] = ["prepare"]
+        task["route"]["confidence"] = 73
+        task["route"]["probabilities"] = {"codex_medium": 73, "claude_medium": 12, "grok_medium": 2}
+        run_file = self.root / self.run["run_id"] / "run.json"
+        run_file.write_text(json.dumps(self.run), encoding="utf-8")
+        normalized = dashboard.RunStore(self.root).list()[0]["tasks"][0]
+        self.assertEqual(normalized["confidence"], 0.73)
+        self.assertEqual(normalized["probabilities"]["codex_medium"], 0.73)
+        self.assertEqual(normalized["probabilities"]["claude_medium"], 0.12)
+        self.assertEqual(normalized["depends_on"], ["prepare"])
 
     def test_malformed_run_is_visible_not_fatal(self):
         bad = self.root / "bad"
@@ -76,7 +104,9 @@ class DashboardTests(unittest.TestCase):
         self.assertIsNone(dashboard.RunStore(self.root).get("../outside"))
 
     def test_http_api_and_read_only_guard(self):
-        server = dashboard.DashboardServer(("127.0.0.1", 0), dashboard.RunStore(self.root))
+        server = dashboard.DashboardServer(
+            ("127.0.0.1", 0), dashboard.RunStore(self.root), dashboard.ConfigStore(self.config_path)
+        )
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         base = f"http://127.0.0.1:{server.server_port}"
@@ -95,7 +125,9 @@ class DashboardTests(unittest.TestCase):
             thread.join(timeout=2)
 
     def test_live_api_discovers_a_new_run_without_restart(self):
-        server = dashboard.DashboardServer(("127.0.0.1", 0), dashboard.RunStore(self.root))
+        server = dashboard.DashboardServer(
+            ("127.0.0.1", 0), dashboard.RunStore(self.root), dashboard.ConfigStore(self.config_path)
+        )
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         base = f"http://127.0.0.1:{server.server_port}"
@@ -115,6 +147,52 @@ class DashboardTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=2)
 
+    def test_config_api_exposes_only_safe_fields_and_updates_atomically(self):
+        server = dashboard.DashboardServer(
+            ("127.0.0.1", 0), dashboard.RunStore(self.root), dashboard.ConfigStore(self.config_path)
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_port}"
+        try:
+            with urllib.request.urlopen(base + "/api/config") as response:
+                visible = json.load(response)
+            self.assertEqual(visible["fallback_provider"], "claude")
+            self.assertEqual(visible["providers"], ["claude", "codex"])
+            self.assertNotIn("secret_setting", visible)
+
+            payload = json.dumps({
+                "fallback_provider": "codex",
+                "fallback_model": "gpt-6-astra",
+                "fallback_effort": "medium",
+            }).encode("utf-8")
+            request = urllib.request.Request(
+                base + "/api/config", data=payload, method="PUT",
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(request) as response:
+                saved = json.load(response)
+            self.assertEqual(saved["fallback_model"], "gpt-6-astra")
+            on_disk = json.loads(self.config_path.read_text(encoding="utf-8"))
+            self.assertEqual(on_disk["fallback_effort"], "medium")
+            self.assertEqual(on_disk["secret_setting"], "preserve-me")
+            self.assertFalse(list(self.root.glob(".config.json.*.tmp")))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_config_store_rejects_disabled_provider_and_invalid_model(self):
+        store = dashboard.ConfigStore(self.config_path)
+        with self.assertRaisesRegex(ValueError, "enabled provider"):
+            store.update({
+                "fallback_provider": "grok", "fallback_model": "grok-model", "fallback_effort": "medium"
+            })
+        with self.assertRaisesRegex(ValueError, "cannot begin"):
+            store.update({
+                "fallback_provider": "codex", "fallback_model": "--danger", "fallback_effort": "medium"
+            })
+
     def test_dashboard_is_always_open_and_polling_does_not_overlap(self):
         markup = (ROOT / "dashboard" / "index.html").read_text(encoding="utf-8")
         script = (ROOT / "dashboard" / "app.js").read_text(encoding="utf-8")
@@ -122,6 +200,10 @@ class DashboardTests(unittest.TestCase):
         self.assertNotIn('class="run-body" hidden', markup)
         self.assertNotIn("setInterval(", script)
         self.assertIn("if (poll.inflight)", script)
+        self.assertIn('id="settingsForm"', markup)
+        self.assertIn('method: "PUT"', script)
+        self.assertIn("function evidenceFlowHtml", script)
+        self.assertIn("value > 1 ? value / 100 : value", script)
 
 
 if __name__ == "__main__":

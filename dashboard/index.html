@@ -10,8 +10,8 @@
   <!--
   THESIS: Routing history reads as a calibrated decision ledger, not a generic card dashboard.
   OWN-WORLD: Paper-white work surface, graphite type, cobalt registration rules, and coral exception marks.
-  STORY: Scan aggregate health, then read the complete live decision ledger without opening individual records.
-  FIRST VIEWPORT: Product title and privacy state lead; one compact telemetry strip precedes the live decision rail.
+  STORY: Verify aggregate health, tune the low-confidence fallback policy, then read the complete live decision ledger.
+  FIRST VIEWPORT: Product title and privacy state lead; telemetry and an always-open policy workbench precede the live decision rail.
   FORM: Router trace ledger, assigned direction 7, seed d45f7a32.
   FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
   -->
@@ -25,6 +25,23 @@
       <article><small>TASKS</small><strong id="taskCount">—</strong></article>
       <article><small>SUCCESS RATE</small><strong id="successRate">—</strong></article>
       <article><small>ROUTER TOKENS</small><strong id="tokenCount">—</strong></article>
+    </section>
+    <section class="settings" aria-labelledby="settingsTitle">
+      <div class="settings-intro">
+        <div>
+          <h2 id="settingsTitle">Fallback policy</h2>
+          <p>Choose what Jev runs when model selection confidence falls below <strong id="confidenceThreshold">the configured threshold</strong>.</p>
+        </div>
+        <span class="settings-state" id="settingsState">Loading config...</span>
+      </div>
+      <form id="settingsForm">
+        <label class="provider-field"><span>Provider</span><select id="fallbackProvider" name="fallback_provider" required disabled></select></label>
+        <label class="model-field"><span>Model</span><input id="fallbackModel" name="fallback_model" type="text" autocomplete="off" spellcheck="false" placeholder="gpt-6-astra" required disabled></label>
+        <label class="effort-field"><span>Reasoning effort</span><select id="fallbackEffort" name="fallback_effort" required disabled></select></label>
+        <button id="saveSettings" type="submit" disabled>Save policy</button>
+      </form>
+      <p class="settings-note" id="configPath"></p>
+      <p class="settings-message" id="settingsMessage" role="status" aria-live="polite"></p>
     </section>
     <section class="toolbar">
       <input id="search" type="search" placeholder="Search run, task, provider, model…" aria-label="Search">
