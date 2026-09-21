@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Jev Router Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <!--
+  THESIS: Routing history reads as a calibrated decision ledger, not a generic card dashboard.
+  OWN-WORLD: Paper-white work surface, graphite type, cobalt registration rules, and coral exception marks.
+  STORY: Scan aggregate health, follow the chronological routing rail, then open one decision for evidence.
+  FIRST VIEWPORT: Product title and privacy state lead; one compact telemetry strip precedes the live decision rail.
+  FORM: Router trace ledger, assigned direction 7, seed d45f7a32.
+  FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
+  -->
+  <main>
+    <header>
+      <div><h1>Jev Router</h1><p class="deck">Every routing decision, on the record.</p><p id="subtitle">Loading recorded decisions…</p></div>
+      <div class="live"><span></span> localhost only</div>
+    </header>
+    <section class="stats" aria-label="Run summary">
+      <article><small>RUNS</small><strong id="runCount">—</strong></article>
+      <article><small>TASKS</small><strong id="taskCount">—</strong></article>
+      <article><small>SUCCESS RATE</small><strong id="successRate">—</strong></article>
+      <article><small>ROUTER TOKENS</small><strong id="tokenCount">—</strong></article>
+    </section>
+    <section class="toolbar">
+      <input id="search" type="search" placeholder="Search run, task, provider, model…" aria-label="Search">
+      <select id="status" aria-label="Filter status"><option value="">All statuses</option></select>
+      <button id="refresh" type="button">Refresh</button>
+    </section>
+    <p id="error" class="error" hidden></p>
+    <section id="runs" class="run-list" aria-live="polite"></section>
+  </main>
+  <template id="runTemplate">
+    <article class="run-card">
+      <button class="run-head" type="button" aria-expanded="false">
+        <span class="status-dot"></span><span class="run-title"></span><span class="run-time"></span><span class="chevron">⌄</span>
+      </button>
+      <div class="run-body" hidden></div>
+    </article>
+  </template>
+  <script src="/static/app.js"></script>
+</body>
+</html>

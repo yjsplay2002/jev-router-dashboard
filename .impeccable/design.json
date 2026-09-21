@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-21T06:00:00Z",
+  "title": "Design System: Jev Router Dashboard",
+  "extensions": {
+    "colorMeta": {
+      "registration-blue": {"role":"primary","displayName":"Registration Blue","canonical":"#1859d1","tonalRamp":["#071b3f","#0b2d69","#104094","#1859d1","#4a7ce0","#7fa4eb","#b5cbf5","#e6edfb"]},
+      "paper": {"role":"neutral","displayName":"Work Paper","canonical":"#f4f2ec","tonalRamp":["#25241f","#4a4841","#716e65","#99958a","#bdb9ae","#d9d6ce","#ebe9e3","#f4f2ec"]}
+    },
+    "typographyMeta": {
+      "display": {"displayName":"Compressed Display","purpose":"Product title only."},
+      "data": {"displayName":"Machine Evidence","purpose":"Run IDs, paths, timing, and token counts."}
+    },
+    "shadows": [],
+    "motion": [
+      {"name":"record-hover","value":"180ms ease-out","purpose":"Two-pixel railward movement and border emphasis on pointer hover."}
+    ],
+    "breakpoints": [
+      {"name":"compact","value":"760px"}
+    ]
+  },
+  "components": [
+    {
+      "name":"Primary Button",
+      "kind":"button",
+      "refersTo":"button-primary",
+      "description":"Compact ink action used for refresh.",
+      "html":"<button class=\"ds-button\">Refresh</button>",
+      "css":".ds-button{background:#17191d;color:#fff;border:1px solid #17191d;border-radius:4px;padding:11px 13px;font:600 16px 'Arial Narrow',sans-serif}.ds-button:hover{background:#1859d1;border-color:#1859d1}.ds-button:focus-visible{outline:3px solid #1859d1;outline-offset:2px}"
+    },
+    {
+      "name":"Search Field",
+      "kind":"input",
+      "description":"Neutral evidence filter with explicit focus state.",
+      "html":"<input class=\"ds-input\" placeholder=\"Search run, task, provider, model…\">",
+      "css":".ds-input{background:#fff;color:#17191d;border:1px solid #ccd1d8;border-radius:4px;padding:11px 13px;font:16px 'Arial Narrow',sans-serif}.ds-input:focus-visible{outline:3px solid #1859d1;outline-offset:2px}"
+    },
+    {
+      "name":"Routing Record",
+      "kind":"custom",
+      "refersTo":"record",
+      "description":"Flat chronological record connected to the shared trace rail.",
+      "html":"<article class=\"ds-record\"><code>20260921T053613Z-df221c61</code><span>completed</span></article>",
+      "css":".ds-record{display:flex;justify-content:space-between;background:#fff;color:#17191d;border:1px solid #ccd1d8;border-radius:6px;padding:14px 16px}.ds-record:hover{border-color:#1859d1}.ds-record:focus-within{outline:3px solid #1859d1;outline-offset:2px}"
+    }
+  ],
+  "narrative": {
+    "northStar":"The Calibrated Decision Ledger",
+    "overview":"Routing history is operational evidence laid onto a precise work surface. A single blue trace rail makes chronology tangible while restrained rules keep dense records scannable.",
+    "keyCharacteristics":["Continuous routing rail","Paper and registration-blue construction","Evidence-first density","Sparse exception color"],
+    "rules":[
+      {"name":"The Registration Rule","body":"Blue describes routing structure or interaction; it is not decorative fill.","section":"colors"},
+      {"name":"The Evidence Type Rule","body":"Use monospace only when character alignment or machine identity carries meaning.","section":"typography"},
+      {"name":"The Flat Evidence Rule","body":"Routing records never float; they register against the shared rail.","section":"elevation"}
+    ],
+    "dos":["Do preserve the continuous routing rail across responsive layouts.","Do pair every state color with a readable status label."],
+    "donts":["Don't introduce gradients, glow, glass, or decorative shadows.","Don't expose full prompt content by default."]
+  }
+}
