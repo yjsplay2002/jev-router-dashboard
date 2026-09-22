@@ -1,9 +1,20 @@
 ---
 name: jev-router
-description: Route tasks across authenticated Claude, Codex, and Grok CLI workers with Jev classification and provider evaluation; preserve auditable run records and optionally inspect them in a localhost-only dashboard. Do not invoke recursively inside a routed child worker.
+description: Delegate substantial tasks across Claude, Codex, and Grok CLI workers when explicit routing, meaningful parallel work, specialist model selection, or independent review is needed. Handle ordinary questions and clear small edits directly. Never recurse inside child workers.
 ---
 
 # Jev task routing
+
+## Selective routing
+
+Decide locally whether delegation adds meaningful value before invoking Jev. Do not call the classifier just to decide whether to route.
+
+Use Jev when the user explicitly requests routing/model comparison, or when substantial work benefits from independently scoped parallel tasks, specialist model selection, or an independent review. State the concrete benefit before routing.
+
+Handle ordinary questions, explanations, status checks, follow-ups, local lookups, opening tools, and clear small edits directly. Length alone or the presence of multiple steps does not justify delegation. When uncertain and no concrete delegation benefit is apparent, work directly.
+
+Never route inside a bounded child worker or when JEV_ROUTER_CHILD=1. Respect cancellation and opt-out immediately; do not duplicate an ongoing task. This preference does not expand permissions. When routing is used, run the normal workflow below and report actual run.json evidence, including failures and parent verification. Direct work needs no fabricated routing record or per-model usage report.
+
 
 Use the globally installed `jev-router` command. On Windows with a stale `PATH`, use `& "$env:USERPROFILE/.local/bin/jev-router.exe"`.
 

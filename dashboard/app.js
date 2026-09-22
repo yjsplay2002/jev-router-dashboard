@@ -5,14 +5,15 @@ const configState = { current: null, busy: true };
 const $ = (id) => document.getElementById(id);
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const fmt = (n) => new Intl.NumberFormat().format(Number(n || 0));
-const ratio = (n) => { const value = Number(n || 0); return Math.max(0, Math.min(1, value > 1 ? value / 100 : value)); };
+const ratio = (n) => { const value = Number(n ?? 0); return Number.isFinite(value) ? Math.max(0, Math.min(1, value > 1 ? value / 100 : value)) : 0; };
 const pct = (n) => `${Math.round(ratio(n) * 100)}%`;
 const elapsed = (n) => Number(n || 0) < 60 ? `${Number(n || 0).toFixed(1)}s` : `${(Number(n || 0) / 60).toFixed(1)}m`;
 const when = (iso) => { const d = new Date(iso); return isNaN(d) ? "Unknown time" : d.toLocaleString(); };
 
 function taskHtml(task) {
   const probs = Object.entries(task.probabilities || {}).sort((a,b) => b[1]-a[1]);
-  const bars = probs.map(([name,value]) => `<div class="prob"><span>${escapeHtml(name)}</span><i><b style="width:${ratio(value)*100}%"></b></i><em>${pct(value)}</em></div>`).join("");
+  // SVG geometry attributes work under style-src 'self'; inline CSS widths do not.
+  const bars = probs.map(([name,value]) => `<div class="prob"><span>${escapeHtml(name)}</span><svg class="prob-track" viewBox="0 0 100 5" preserveAspectRatio="none" aria-hidden="true"><rect class="prob-fill" width="${ratio(value)*100}" height="5" /></svg><em>${pct(value)}</em></div>`).join("");
   const usage = task.usage || {};
   return `<section class="task">
     <div class="task-top"><div><small>${escapeHtml(task.category || "unclassified")} · ${escapeHtml(task.difficulty || "unknown")}</small><h3>${escapeHtml(task.title || task.id || "Untitled task")}</h3></div><span class="badge">${escapeHtml(task.status || "unknown")}</span></div>
