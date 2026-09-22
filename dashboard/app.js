@@ -2,6 +2,8 @@
 const state = { runs: [], query: "", status: "", cards: new Map(), firstLoad: true };
 const poll = { timer: null, inflight: null, delay: 2500, min: 2500, max: 30000 };
 const configState = { current: null, busy: true, catalog: {} };
+const nativeState = { current: null, busy: true };
+const nativeProviders = ["codex", "claude", "grok"];
 const $ = (id) => document.getElementById(id);
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const fmt = (n) => new Intl.NumberFormat().format(Number(n || 0));
@@ -148,6 +150,90 @@ async function loadHealth(signal) {
   $("subtitle").textContent = health.runs_dir;
 }
 
+function nativePayload() {
+  return { native_fallbacks: Object.fromEntries(nativeProviders.map(provider =>
+    [provider, { model: $(`nativeModel-${provider}`).value || null }])) };
+}
+
+function updateNativeState() {
+  nativeProviders.forEach(provider => {
+    $(`nativeModel-${provider}`).disabled = nativeState.busy || !nativeState.current;
+  });
+  const changed = nativeState.current && JSON.stringify(nativePayload()) !== JSON.stringify(nativeState.current);
+  $("saveNativeSettings").disabled = nativeState.busy || !changed;
+  $("reloadNativeSettings").disabled = nativeState.busy;
+  if (!nativeState.busy && nativeState.current) {
+    $("nativeSettingsState").textContent = changed ? "Unsaved changes" : "Defaults synced";
+    $("nativeSettingsState").dataset.tone = changed ? "pending" : "ready";
+  }
+}
+
+function renderNativeConfig(config) {
+  nativeProviders.forEach(provider => {
+    const selected = config.native_fallbacks?.[provider]?.model || "";
+    const catalog = config.model_catalog?.[provider] || {};
+    const models = catalog.models || [];
+    const select = $(`nativeModel-${provider}`);
+    select.replaceChildren(new Option("No default — parent handles fallback", ""),
+      ...models.map(model => new Option(`${model.label} — ${model.id}`, model.id)));
+    if (selected && !models.some(model => model.id === selected)) {
+      select.add(new Option(`${selected} (saved; verify availability)`, selected));
+    }
+    select.value = selected;
+    $(`nativeNote-${provider}`).textContent = catalog.status === "cached"
+      ? `Local catalog updated ${when(catalog.updated_at)}. Native availability is checked at dispatch.`
+      : "No local catalog available. Keep the saved model or clear the default, then reload after updating the catalog.";
+  });
+  nativeState.current = nativePayload();
+  nativeState.busy = false;
+  updateNativeState();
+}
+
+async function loadNativeConfig() {
+  // Reload only this form; do not discard unsaved provider defaults silently.
+  if (nativeState.current && JSON.stringify(nativePayload()) !== JSON.stringify(nativeState.current)) {
+    $("nativeSettingsMessage").textContent = "Save your changed defaults before reloading model options.";
+    return;
+  }
+  nativeState.busy = true;
+  updateNativeState();
+  try {
+    renderNativeConfig(await fetchJson("/api/config"));
+    $("nativeSettingsMessage").textContent = "Model options reloaded.";
+    $("nativeSettingsMessage").dataset.tone = "ready";
+  } catch (error) {
+    nativeState.busy = false;
+    updateNativeState();
+    $("nativeSettingsState").textContent = "Defaults unavailable";
+    $("nativeSettingsState").dataset.tone = "error";
+    $("nativeSettingsMessage").textContent = `${error.message}. Reload model options to try again.`;
+    $("nativeSettingsMessage").dataset.tone = "error";
+  }
+}
+
+async function saveNativeConfig(event) {
+  event.preventDefault();
+  nativeState.busy = true;
+  updateNativeState();
+  $("nativeSettingsState").textContent = "Saving defaults...";
+  $("nativeSettingsState").dataset.tone = "pending";
+  try {
+    renderNativeConfig(await fetchJson("/api/config", {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(nativePayload()),
+    }));
+    $("nativeSettingsMessage").textContent = "Provider defaults saved. New native fallback decisions will read these settings.";
+    $("nativeSettingsMessage").dataset.tone = "ready";
+  } catch (error) {
+    nativeState.busy = false;
+    updateNativeState();
+    $("nativeSettingsState").textContent = "Save failed";
+    $("nativeSettingsState").dataset.tone = "error";
+    $("nativeSettingsMessage").textContent = `${error.message}. Your edits are kept; review them and save again.`;
+    $("nativeSettingsMessage").dataset.tone = "error";
+  }
+}
+
 function configPayload() {
   return {
     fallback_provider: $("fallbackProvider").value,
@@ -274,6 +360,9 @@ $("refresh").addEventListener("click", () => tick(true));
 $("settingsForm").addEventListener("input", updateSaveState);
 $("settingsForm").addEventListener("change", updateSaveState);
 $("settingsForm").addEventListener("submit", saveConfig);
+$("nativeSettingsForm").addEventListener("change", updateNativeState);
+$("nativeSettingsForm").addEventListener("submit", saveNativeConfig);
+$("reloadNativeSettings").addEventListener("click", loadNativeConfig);
 $("fallbackProvider").addEventListener("change", () => {
   renderModels(configState.current?.fallback_provider === $("fallbackProvider").value ? configState.current.fallback_model : "");
   updateSaveState();
@@ -282,4 +371,4 @@ $("thresholdInput").addEventListener("input", () => {
   $("confidenceThreshold").textContent = $("thresholdInput").validity.valid ? `${$("thresholdInput").value}%` : "a valid threshold";
 });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(true); });
-Promise.allSettled([loadHealth(), loadConfig()]).finally(() => tick(false));
+Promise.allSettled([loadHealth(), loadConfig(), loadNativeConfig()]).finally(() => tick(false));

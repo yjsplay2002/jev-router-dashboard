@@ -80,6 +80,14 @@ class DashboardTests(unittest.TestCase):
         catalog = self.root / ".codex" / "models_cache.json"
         catalog.parent.mkdir()
         catalog.write_text(json.dumps({"models": [{"slug": "gpt-6-astra", "visibility": "list"}]}), encoding="utf-8")
+        claude_catalog = self.root / ".claude" / "cache" / "model-catalog" / "catalog.json"
+        claude_catalog.parent.mkdir(parents=True)
+        claude_catalog.write_text(json.dumps({"catalog": {"config": {"models": [
+            {"id": "claude-sonnet-4-5"}, {"id": "sonnet", "name": "Sonnet alias"}
+        ]}}}), encoding="utf-8")
+        grok_catalog = self.root / ".grok" / "models_cache.json"
+        grok_catalog.parent.mkdir()
+        grok_catalog.write_text(json.dumps({"models": [{"id": "grok-4"}]}), encoding="utf-8")
 
     def tearDown(self):
         self.temp.cleanup()
@@ -226,19 +234,116 @@ class DashboardTests(unittest.TestCase):
                 "fallback_provider": "codex", "fallback_model": "--danger", "fallback_effort": "medium"
             })
 
+    def test_native_fallbacks_are_independent_partial_and_resettable(self):
+        store = dashboard.ConfigStore(self.config_path, model_home=self.root)
+        visible = store.public()
+        self.assertEqual(visible["native_fallbacks"], {
+            "codex": {"model": None}, "claude": {"model": None}, "grok": {"model": None},
+        })
+        self.assertEqual(set(visible["model_catalog"]), {"codex", "claude", "grok"})
+        self.assertEqual(store.update({"native_fallbacks": {"codex": {"model": "gpt-6-astra"}}})
+                         ["native_fallbacks"]["codex"]["model"], "gpt-6-astra")
+        store.update({"native_fallbacks": {"claude": {"model": "sonnet"}}})
+        saved = store.update({"native_fallbacks": {"grok": {"model": "grok-4"}}})
+        self.assertEqual(saved["native_fallbacks"], {
+            "codex": {"model": "gpt-6-astra"},
+            "claude": {"model": "sonnet"},
+            "grok": {"model": "grok-4"},
+        })
+        reset = store.update({"native_fallbacks": {"claude": {"model": ""}, "grok": {"model": None}}})
+        self.assertIsNone(reset["native_fallbacks"]["claude"]["model"])
+        self.assertIsNone(reset["native_fallbacks"]["grok"]["model"])
+        on_disk = json.loads(self.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(on_disk["fallback_provider"], "claude")
+        self.assertEqual(on_disk["fallback_model"], "claude-default")
+        self.assertEqual(on_disk["secret_setting"], "preserve-me")
+
+    def test_native_fallback_validation_is_atomic_and_provider_scoped(self):
+        store = dashboard.ConfigStore(self.config_path, model_home=self.root)
+        invalid = [
+            {"native_fallbacks": {"other": {"model": "gpt-6-astra"}}},
+            {"native_fallbacks": {"codex": {"model": "claude-sonnet-4-5"}}},
+            {"native_fallbacks": {"claude": {"model": "grok-4"}}},
+            {"native_fallbacks": {"grok": {"model": "gpt-6-astra"}}},
+            {"native_fallbacks": {"codex": {"model": 1}}},
+            {"native_fallbacks": {"codex": {"model": "gpt-6-astra", "extra": True}}},
+        ]
+        before = self.config_path.read_bytes()
+        for payload in invalid:
+            with self.assertRaises(ValueError):
+                store.update(payload)
+            self.assertEqual(self.config_path.read_bytes(), before)
+
+    def test_native_claude_rejects_foreign_legacy_and_polluted_catalog_models(self):
+        raw = json.loads(self.config_path.read_text(encoding="utf-8"))
+        raw["fallback_provider"] = "claude"
+        raw["fallback_model"] = "gpt-6-astra"
+        self.config_path.write_text(json.dumps(raw), encoding="utf-8")
+        claude_catalog = self.root / ".claude" / "cache" / "model-catalog" / "catalog.json"
+        claude_catalog.write_text(json.dumps({"catalog": {"config": {"models": [
+            {"id": "claude-sonnet-4-5"}, {"id": "sonnet"},
+            {"id": "gpt-6-astra"}, {"id": "arbitrary-alias"},
+        ]}}}), encoding="utf-8")
+        store = dashboard.ConfigStore(self.config_path, model_home=self.root)
+        ids = {item["id"] for item in store.public()["model_catalog"]["claude"]["models"]}
+        self.assertIn("claude-sonnet-4-5", ids)
+        self.assertIn("sonnet", ids)
+        self.assertNotIn("gpt-6-astra", ids)
+        self.assertNotIn("arbitrary-alias", ids)
+        before = self.config_path.read_bytes()
+        for model in ("gpt-6-astra", "arbitrary-alias"):
+            with self.assertRaisesRegex(ValueError, "valid claude"):
+                store.update({"native_fallbacks": {"claude": {"model": model}}})
+            self.assertEqual(self.config_path.read_bytes(), before)
+
+    def test_existing_known_claude_alias_survives_unavailable_catalog(self):
+        raw = json.loads(self.config_path.read_text(encoding="utf-8"))
+        raw["native_fallbacks"] = {"claude": {"model": "opusplan"}}
+        self.config_path.write_text(json.dumps(raw), encoding="utf-8")
+        (self.root / ".claude" / "cache" / "model-catalog" / "catalog.json").unlink()
+        store = dashboard.ConfigStore(self.config_path, model_home=self.root)
+        saved = store.update({"native_fallbacks": {"claude": {"model": "opusplan"}}})
+        self.assertEqual(saved["native_fallbacks"]["claude"]["model"], "opusplan")
+        with self.assertRaisesRegex(ValueError, "catalog is unavailable"):
+            store.update({"native_fallbacks": {"claude": {"model": "sonnet"}}})
+
+    def test_native_fallback_http_put_preserves_legacy_config(self):
+        server = dashboard.DashboardServer(
+            ("127.0.0.1", 0), dashboard.RunStore(self.root), dashboard.ConfigStore(self.config_path, model_home=self.root)
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_port}"
+        try:
+            payload = json.dumps({"native_fallbacks": {"grok": {"model": "grok-4"}}}).encode("utf-8")
+            request = urllib.request.Request(base + "/api/config", data=payload, method="PUT",
+                                             headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(request) as response:
+                saved = json.load(response)
+            self.assertEqual(saved["native_fallbacks"]["grok"]["model"], "grok-4")
+            self.assertEqual(saved["fallback_model"], "claude-default")
+            on_disk = json.loads(self.config_path.read_text(encoding="utf-8"))
+            self.assertEqual(on_disk["fallback_effort"], "high")
+            self.assertEqual(on_disk["secret_setting"], "preserve-me")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
     def test_threshold_bounds_and_catalog_are_validated_without_changing_other_fields(self):
         catalog = self.root / ".codex" / "models_cache.json"
         catalog.parent.mkdir(exist_ok=True)
         catalog.write_text(json.dumps({"models": [
-            {"slug": "test-model", "display_name": "Test", "visibility": "list", "secret": "never expose"},
+            {"slug": "gpt-test-model", "display_name": "Test", "visibility": "list", "secret": "never expose"},
             {"slug": "hidden-model", "visibility": "hide"}
         ]}), encoding="utf-8")
         store = dashboard.ConfigStore(self.config_path, model_home=self.root)
         visible = store.public()["model_catalog"]
-        self.assertEqual([m["id"] for m in visible["codex"]["models"]], ["test-model"])
+        self.assertEqual([m["id"] for m in visible["codex"]["models"]], ["gpt-test-model"])
         self.assertNotIn("never expose", json.dumps(visible))
-        self.assertEqual(visible["claude"]["models"][0]["source"], "configured")
-        patch = {"fallback_provider": "codex", "fallback_model": "test-model", "fallback_effort": "medium"}
+        self.assertTrue(any(m["id"] == "claude-default" and m["source"] == "configured"
+                            for m in visible["claude"]["models"]))
+        patch = {"fallback_provider": "codex", "fallback_model": "gpt-test-model", "fallback_effort": "medium"}
         for value in (0, 0.3, 0.55, 0.9, 1):
             self.assertEqual(store.update(dict(patch, confidence_threshold=value))["confidence_threshold"], value)
         before = self.config_path.read_bytes()
@@ -249,7 +354,7 @@ class DashboardTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "catalog"):
             store.update(dict(patch, fallback_model="other-provider-model"))
         catalog.write_text("broken", encoding="utf-8")
-        self.assertEqual(store.public()["model_catalog"]["codex"]["models"][0]["id"], "test-model")
+        self.assertEqual(store.public()["model_catalog"]["codex"]["models"][0]["id"], "gpt-test-model")
 
     def test_dashboard_is_always_open_and_polling_does_not_overlap(self):
         markup = (ROOT / "dashboard" / "index.html").read_text(encoding="utf-8")

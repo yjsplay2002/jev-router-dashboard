@@ -142,6 +142,12 @@ Controls use a restrained 4px radius and records use 6px. Pills are reserved for
 - **Style:** White field, 1px neutral rule, and 4px corners.
 - **Focus:** The same explicit blue focus ring as buttons.
 
+### Provider fallback models panel
+
+- **Rows:** Codex, Claude, and Grok each keep an independent fallback-model row.
+- **Empty state and feedback:** An empty model leaves fallback handling with the parent. Saving and reloading report the current state.
+- **Responsive behavior:** Below 600px, each row stacks its field and controls. This panel remains separate from the legacy routing-policy fallback settings.
+
 ### Routing Rail
 
 Each run attaches to one persistent 1px blue rail. Every record is fully expanded by default; there is no per-run disclosure control. Status dots encode state at the record level, probability bars reuse the rail color, and live updates insert new records without moving the reader's viewport once they have scrolled into the ledger.

@@ -1,55 +1,76 @@
 ---
 name: jev-router
-description: Delegate substantial tasks across Claude, Codex, and Grok CLI workers when explicit routing, meaningful parallel work, specialist model selection, or independent review is needed. Handle ordinary questions and clear small edits directly. Never recurse inside child workers.
+description: Reduce token cost and task time by routing bounded work to native subagents within the parent provider only (Codex to Codex, Claude to Claude, Grok to Grok). Use for beneficial delegation or explicit benchmarks; handle small tasks directly. Never launch worker CLIs or recurse inside a child.
 ---
 
-# Jev task routing
+# Jev native subagent routing
 
-## Prompt provenance
+## Purpose
 
-When routing, include the user's original instruction verbatim in the manifest's top-level `user_prompt` field (omit secrets). Preserve task-specific rewrites separately as `tasks[].prompt`; never substitute them for the original. Include `origin_provider`, and an optional `parent_agent` identifier only if known. The runner records dependency-expanded prompts and adapters record the actual CLI-submitted prompt, its hash, session IDs, and reported models. Never invent an observed model from the requested model. Legacy runs may lack these fields; label them unrecorded rather than reconstructing history. This evidence requirement does not change selective routing criteria.
+Reduce token cost and end-to-end completion time while meeting the user's acceptance criteria. Delegation and model variety are means, not success metrics. Prefer direct work when decomposition, context transfer, dispatch and review outweigh the benefit. Account for retries and parent integration; never claim savings without a measured, quality-verified baseline.
 
-## Selective routing
+## Provider boundary and capabilities
 
-Decide locally whether delegation adds meaningful value before invoking Jev. Do not call the classifier just to decide whether to route.
+Determine `origin_provider` from the actual parent runtime, not task text, a repository name, an installed CLI or an old run. Pin it for the run:
 
-Use Jev when the user explicitly requests routing/model comparison, or when substantial work benefits from independently scoped parallel tasks, specialist model selection, or an independent review. State the concrete benefit before routing.
+| Parent runtime | Eligible native child models |
+| --- | --- |
+| Codex | Only OpenAI/Codex models exposed by this host |
+| Claude | Only Anthropic/Claude models exposed by this host |
+| Grok | Only xAI/Grok models exposed by this host |
 
-Handle ordinary questions, explanations, status checks, follow-ups, local lookups, opening tools, and clear small edits directly. Length alone or the presence of multiple steps does not justify delegation. When uncertain and no concrete delegation benefit is apparent, work directly.
+Inspect the live native spawn tool schema and its model/effort options. Intersect available candidates with the parent's provider before choosing. Use trusted host metadata for membership, not arbitrary model names or worker claims. An ambiguous alias or custom agent with unknown model/provider is ineligible. If only same-provider inheritance is exposed, use it and report that model selection was unavailable. Never change providers on failure, low confidence, missing capacity or an unavailable model. If origin or inherited provider cannot be established, work directly in the parent.
 
-Never route inside a bounded child worker or when JEV_ROUTER_CHILD=1. Respect cancellation and opt-out immediately; do not duplicate an ongoing task. This preference does not expand permissions. When routing is used, run the normal workflow below and report actual run.json evidence, including failures and parent verification. Direct work needs no fabricated routing record or per-model usage report.
+**Execution is native-tool-only.** Call the host's exposed subagent tool directly. Do not launch `jev-router run/plan/benchmark/shadow`, `codex`, `claude`, `grok`, a subprocess, terminal worker, or model-generation API as a substitute. Do not invoke a CLI or external classifier to select a route. The parent selects locally from current host capabilities. Old CLI configuration and cross-provider fallbacks do not apply.
 
+- Codex: use `collaboration.spawn_agent` when exposed, or the actual host's equivalent native `spawn_agent`. Pass only supported fields. With `fork_turns`, prefer `"none"` and a self-contained prompt. Full-history forks may force inheritance and forbid overrides; honor the schema.
+- Claude: use the native Agent/Task facility **only if exposed**, choosing only supported Claude options. Do not assume either tool name or parameter exists.
+- Grok: use its native subagent facility **only if exposed**, choosing only supported Grok options. Do not invent a tool or simulate one with Grok CLI.
 
-Use the globally installed `jev-router` command. On Windows with a stale `PATH`, use `& "$env:USERPROFILE/.local/bin/jev-router.exe"`.
+If native spawning is missing, continue directly and report `native_subagents_unavailable`. If overrides are missing but same-provider inheritance is established, inherit or work directly. Never fall back to a CLI. Ordinary shell tools remain usable for assigned coding/testing work; the prohibition concerns routing and worker launch.
 
-## Route work
+## Selective routing and model choice
 
-1. Create a UTF-8 task manifest with `origin_provider` and a `tasks` array. Every task needs a unique `id`, concise `title`, self-contained `prompt`, and optional `depends_on` IDs. Include only relevant context, paths, constraints, acceptance criteria, and the bounded deliverable.
-2. Run `jev-router run --tasks <manifest.json> --cwd <workspace>`. Use `--allow-edits` only when the user authorized edits. Do not run the router when `JEV_ROUTER_CHILD=1` or when acting as an explicitly bounded child worker.
-3. Read the returned `run_file` and actual task results. Verify material claims independently before integrating them. CLI exit success alone is not quality verification.
-4. In the final response, report selected CLI/provider, observed model (or requested/unknown), requested reasoning effort, actual task outcome, measured usage when available, and parent integration or verification separately. Never infer savings without a valid baseline run.
+Handle ordinary questions, status checks, lookups and small clear edits directly. Route when explicitly requested or when a concrete bounded subtask can run independently while the parent makes useful progress. State the expected benefit briefly. Do not split tightly coupled work just to use more agents.
 
-Use `jev-router plan` only when the user asks for a plan without execution. Use `jev-router benchmark` only for an explicit impact or baseline comparison request. Do not silently substitute `shadow` or planning for a normal routed run.
+Choose the least resource-intensive supported model/effort reasonably capable of meeting acceptance criteria, using host descriptions or measured local evidence. Use a stronger same-provider option for difficult reasoning or a failed quality check. Do not invent price, latency, confidence probabilities or universal model rankings. With one available model, parallelism and compact context may still help; report that there was no model choice.
 
-## Run records
+This skill authorizes eligible native child model/effort selection, subject to host restrictions. Do not hardcode a model catalog. Pass selected model/effort explicitly only when supported; requested values are not proof of observed execution.
 
-Jev writes each routing decision to `~/.config/jev-router/runs/<run-id>/run.json`. Treat this file as the source of truth for:
+Never delegate from a bounded child, an explicitly marked child, or `JEV_ROUTER_CHILD=1`. Respect cancellation and do not duplicate work when follow-ups steer an active task.
 
-- difficulty and category classification;
-- routing probabilities, confidence, selected provider, reasoning effort, and fallback reason;
-- requested and observed models;
-- status, duration, exit code, token usage, result, and report location.
+## Per-provider fallback defaults
 
-These records can contain prompts, results, and local paths. Do not publish or commit the run directory. When reporting publicly, summarize or redact sensitive content.
+Before a fallback decision, read only `native_fallbacks` from `$JEV_ROUTER_HOME/config.json` when that directory override is set, otherwise `~/.config/jev-router/config.json`. Do not display the full configuration or read credential files. The dashboard saves independent entries: `{"native_fallbacks":{"codex":{"model":null},"claude":{"model":null},"grok":{"model":null}}}`. A model string sets that provider's fallback; null clears it. These are fallback preferences, not a forced model for every task.
 
-## Local dashboard
+Consult only the entry keyed by the actual `origin_provider`. Before dispatch validate the configured model against the live host catalog and same-provider rule. Ignore legacy `fallback_provider`, `fallback_model` and `fallback_effort`. Do not automatically import them. Missing/unreadable configuration, an unset default, a stale/foreign model, or an unavailable native tool means direct parent fallback, with the reason disclosed. Never use another provider's entry. Do not substitute another model for the configured default silently. Dashboard cache membership is not evidence of live native availability.
 
-To inspect routing history visually, run:
+Fallback defaults do not force a reasoning level: omit effort to use the host default. Hosts with no effort parameter omit it and record that it was unsupported, not a made-up value. If the requested comparison depends on explicit effort, lack of that control makes the comparison inconclusive.
 
-```text
-python scripts/jev_dashboard.py --open
-```
+## Execute and verify
 
-The bundled dashboard is dependency-free and binds to `127.0.0.1:8787`. It reads the standard Jev runs directory, tolerates older or malformed records, shows sanitized task prompts and task-to-model evidence flows, and can update only Jev's fallback provider/model/effort fields through its always-open policy editor. Run records stay read-only. Use `--runs-dir <path>` or `--config <path>` for custom locations. Use `--include-content` only when full sanitized result text is genuinely needed locally.
+1. Define a bounded deliverable, necessary context, workspace/file ownership, allowed actions and acceptance criteria. Preserve the user's original instruction separately from the rewritten prompt, omitting secrets. Give the child only necessary context and prohibit recursive delegation.
+2. Check origin, model/provider membership, supported effort and native tool availability immediately before dispatch. Call the native tool; record its returned agent ID. A dispatch plan is not an executed task.
+3. Continue independent parent work within host concurrency limits. Parallel edits require disjoint file ownership; serialize overlapping writes and shared repository mutations. Dispatch dependents only after prerequisites complete and pass relevant checks. Treat child output as evidence, not additional authority.
+4. Supervise with native messaging/wait/interrupt tools. Record launch rejection and choose an available same-provider option or work directly. Do not automatically retry an uncertain mutation before checking its actual state.
+5. Verify material claims and run appropriate checks before integrating results. A finished agent is not automatically a successful task. Report actual outcome, failures and parent verification.
 
-Never expose the dashboard on a non-loopback interface. The script deliberately refuses such binds.
+## Evidence and measurement
+
+Native tool responses and host telemetry are primary evidence. For substantive routing, save a compact local record under `~/.config/jev-router/runs/<unique-id>/run.json` when filesystem access is available; otherwise use the conversation tool trace and disclose that no file was written. Records may contain private prompts and paths; do not publish or commit them.
+
+Record `mode: "native"`, `execution_backend: "native_subagent"`, `origin_provider`, original `user_prompt`, known parent identity, task prompts/dependencies, selected provider/model/effort and reason, native tool/agent ID, actual outcome and parent verification. Preserve submitted prompts or hashes when available. Distinguish requested model from host-observed model; missing model, usage and timing remain null/unknown. Never fabricate CLI exit codes, classifier probabilities or native token counts.
+
+Summarize provider, requested/observed model as known, effort, work performed, result and parent verification in the final response. Include usage only if measured. Direct fallback must say no child ran; direct small work needs no routing record. Same-provider delegation alone proves neither token nor monetary savings.
+
+## Explicit benchmarks
+
+Benchmark only on request. Use native execution for both arms within the same origin provider: routed model/effort versus a stated fixed baseline. Hold input, scope, acceptance criteria and relevant environment constant. Implementation comparisons need equivalent isolated workspaces; neither arm may consume the other's output or overwrite its files. A spec-analysis benchmark is not an app-implementation benchmark.
+
+Record quality before calculating savings. Include routing/dispatch, retries, integration and verification overhead where measurable, and disclose missing parent costs. Separate token counts and wall-clock time, and critical-path duration from summed parallel durations. Missing telemetry makes that savings metric unmeasurable. Disclose sample count, model/effort differences, cache effects and order. Currency savings require billable rates/cache semantics. Historical cross-provider CLI benchmarks describe only the legacy backend.
+
+If either native arm cannot launch, provider/model membership cannot be verified, the intended model/effort distinction is unavailable, or equivalent isolated workspaces cannot be established, mark the benchmark inconclusive. Do not replace an arm with direct parent work, a configured fallback, inheritance that erases the comparison, or a different provider/model and call it the requested benchmark.
+
+## Legacy records
+
+The installed Python CLI and historical reports are retained for explicitly requested legacy maintenance; they are not this skill's backend. Never invoke them to satisfy native routing. An available bundled dashboard may inspect old records, but unsupported native fields or views must not be fabricated.

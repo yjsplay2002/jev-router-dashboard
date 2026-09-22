@@ -15,9 +15,22 @@ A local dashboard for understanding how Jev classified a task, why it selected a
 - status, duration, exit code, token usage, and a redacted result summary;
 - links to Jev's generated local HTML reports.
 - always-expanded task details with automatic live updates as new run records appear.
-- an always-open fallback policy editor for provider, model, and reasoning effort.
+- independent native fallback model selectors for Codex, Claude, and Grok;
+- a separate legacy CLI fallback editor for provider, model, reasoning effort and confidence threshold.
 
-Probability records are normalized whether Jev stored them as fractions (`0.73`) or percentages (`73`), so both labels and gauges render as `73%`. The dashboard reads existing `~/.config/jev-router/runs/*/run.json` files and never modifies run data. Its only write operation atomically updates `fallback_provider`, `fallback_model`, and `fallback_effort` in Jev's local `config.json`; unrelated settings are preserved. It does not call external services or require a database.
+Probability records are normalized whether Jev stored them as fractions (`0.73`) or percentages (`73`), so both labels and gauges render as `73%`. The dashboard reads existing `~/.config/jev-router/runs/*/run.json` files and never modifies run data. Its only write operation atomically updates native provider defaults or the legacy fallback fields and confidence threshold in Jev's local `config.json`; unrelated settings are preserved. It does not call external services or require a database.
+
+## Native provider defaults
+
+The first settings panel lets you choose a fallback model independently for each provider. Saving Codex does not replace Claude or Grok's settings. Choose **No default — parent handles fallback** to clear a provider's preference. The model lists come from local caches; the dashboard does not launch a CLI to discover models.
+
+```json
+{"native_fallbacks":{"codex":{"model":null},"claude":{"model":null},"grok":{"model":null}}}
+```
+
+The [native router skill](https://github.com/yjsplay2002/jev-cli-router/blob/main/skill/SKILL.md) reads only the actual parent's provider entry. Codex routes only within OpenAI/Codex, Claude within Claude, and Grok within Grok. A saved preference is rechecked against the host's live native capabilities; an unavailable or unset model leaves fallback work with the parent. These defaults do not enable unsupported native tools or change the ordinary routing choice.
+
+`GET /api/config` returns all three native entries; `PUT /api/config` accepts a partial `native_fallbacks` object and preserves omitted providers. A null or empty model clears that entry. Unknown providers, foreign model families and invalid/unavailable new catalog selections are rejected without writing. Legacy global fields are not automatically migrated. The second settings panel is explicitly for legacy CLI runs and has no effect on native routing.
 
 ## Run locally
 
@@ -51,7 +64,7 @@ On Windows, a typical destination is `%USERPROFILE%\.codex\skills\jev-router`.
 ## Privacy and security
 
 - Binds only to loopback and refuses public/network binds.
-- Run history and reports remain read-only. Only `PUT /api/config` is writable, and only the three fallback fields are accepted.
+- Run history and reports remain read-only. Only `PUT /api/config` is writable; accepted fields are `native_fallbacks`, the three legacy fallback fields and `confidence_threshold`.
 - Config writes require same-origin JSON requests, validate enabled providers and efforts, and use atomic file replacement.
 - Displays sanitized recorded task prompts in the local evidence diagram; common secret patterns and home-directory paths are redacted.
 - Truncates and scrubs common API keys, bearer tokens, passwords, secrets, GitHub tokens, and home-directory paths from displayed summaries.
@@ -72,7 +85,7 @@ python -m unittest discover -s tests -v
 Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 # Policy editor
 
-Confidence threshold is editable from 0 to 100 percent (default 55%). The API stores it as a number from 0 to 1. Higher thresholds trigger fallback more often. Changes apply to new routing tasks, not historical runs.
+The legacy CLI confidence threshold is editable from 0 to 100 percent (default 55%). The API stores it as a number from 0 to 1. Higher thresholds trigger legacy fallback more often. It does not govern the native skill's local model choice. Changes never rewrite historical runs.
 
 On page load the model dropdown reads installed CLI catalogs: Codex models_cache.json (CODEX_HOME when set), Grok models_cache.json, and the newest Claude cache/model-catalog file. It filters by provider and excludes hidden entries. Only model identifiers and labels are exposed; no inference CLI, credential file, or remote model request is used.
 

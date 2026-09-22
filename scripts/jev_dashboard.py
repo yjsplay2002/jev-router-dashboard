@@ -282,6 +282,10 @@ class RunStore:
 class ConfigStore:
     """Expose and update only the fallback policy fields in Jev's config."""
 
+    NATIVE_PROVIDERS = ("codex", "claude", "grok")
+    CLAUDE_ALIASES = frozenset({"sonnet", "opus", "haiku", "opusplan"})
+    MODEL_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/\[\]-]{0,159}")
+
     def __init__(self, path: Path, model_home: Path | None = None):
         self.path = path.expanduser().resolve()
         self.model_home = model_home or Path.home()
@@ -290,7 +294,8 @@ class ConfigStore:
     def model_catalog(self, raw: dict[str, object]) -> dict[str, object]:
         """Read only model catalogs; never launch inference or expose credential fields."""
         result = {}
-        for provider in self._options(raw)[0]:
+        native_fallbacks = self._native_fallbacks(raw)
+        for provider in self.NATIVE_PROVIDERS:
             models = {}
             stamp = None
             try:
@@ -317,15 +322,41 @@ class ConfigStore:
                     if not isinstance(item, dict) or item.get("hidden") or item.get("visibility") == "hide":
                         continue
                     model_id = item.get("slug") or item.get("id")
-                    if isinstance(model_id, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/\[\]-]{0,159}", model_id):
+                    if (isinstance(model_id, str)
+                            and self._valid_model_family(provider, model_id)):
                         models[model_id] = {"id": model_id, "label": scrub(item.get("display_name") or item.get("name") or model_id, 160), "source": "cli_cache"}
             except (OSError, ValueError, KeyError, TypeError, AttributeError):
                 pass
             if raw.get("fallback_provider") == provider and raw.get("fallback_model"):
                 current = str(raw["fallback_model"])
-                models.setdefault(current, {"id": current, "label": current + " (current; not in catalog)", "source": "configured"})
+                if self._valid_model_family(provider, current):
+                    models.setdefault(current, {"id": current, "label": current + " (legacy configured; not in catalog)", "source": "configured"})
+            current_native = native_fallbacks[provider]["model"]
+            if current_native and self._valid_model_family(provider, current_native):
+                models.setdefault(current_native, {"id": current_native, "label": current_native + " (current; not in catalog)", "source": "configured"})
             result[provider] = {"models": list(models.values()), "updated_at": stamp,
                                 "status": "cached" if stamp else "unavailable"}
+        return result
+
+    @classmethod
+    def _valid_model_family(cls, provider: str, model: str) -> bool:
+        if not cls.MODEL_ID_RE.fullmatch(model):
+            return False
+        if provider == "codex":
+            return model.startswith(("gpt-", "o1", "o3", "o4"))
+        if provider == "claude":
+            return model.startswith("claude-") or model in cls.CLAUDE_ALIASES
+        return provider == "grok" and model.startswith("grok-")
+
+    @classmethod
+    def _native_fallbacks(cls, raw: dict[str, object]) -> dict[str, dict[str, str | None]]:
+        stored = raw.get("native_fallbacks")
+        stored = stored if isinstance(stored, dict) else {}
+        result: dict[str, dict[str, str | None]] = {}
+        for provider in cls.NATIVE_PROVIDERS:
+            entry = stored.get(provider)
+            model = entry.get("model") if isinstance(entry, dict) else None
+            result[provider] = {"model": model if isinstance(model, str) else None}
         return result
 
     def _read(self) -> dict[str, object]:
@@ -359,6 +390,7 @@ class ConfigStore:
             "fallback_provider": raw.get("fallback_provider", ""),
             "fallback_model": raw.get("fallback_model") or "",
             "fallback_effort": raw.get("fallback_effort") or "",
+            "native_fallbacks": self._native_fallbacks(raw),
             "providers": providers,
             "efforts": efforts,
             "confidence_threshold": safe_number(raw.get("confidence_threshold", 0.55)),
@@ -369,6 +401,8 @@ class ConfigStore:
     def update(self, patch: object) -> dict[str, object]:
         if not isinstance(patch, dict):
             raise ValueError("Request body must be a JSON object")
+        if set(patch) == {"native_fallbacks"}:
+            return self._update_native(patch["native_fallbacks"])
         required = {"fallback_provider", "fallback_model", "fallback_effort"}
         if not required.issubset(patch) or set(patch) - required - {"confidence_threshold"}:
             raise ValueError("Provide fallback_provider, fallback_model, fallback_effort and optionally confidence_threshold")
@@ -415,6 +449,65 @@ class ConfigStore:
                 if temp_path and temp_path.exists():
                     temp_path.unlink(missing_ok=True)
             return self.public(raw)
+
+    def _update_native(self, patch: object) -> dict[str, object]:
+        if not isinstance(patch, dict):
+            raise ValueError("native_fallbacks must be an object")
+        unknown = set(patch) - set(self.NATIVE_PROVIDERS)
+        if unknown:
+            raise ValueError(f"Unknown native fallback provider: {sorted(unknown)[0]}")
+        with self._lock:
+            raw = self._read()
+            updated = self._native_fallbacks(raw)
+            catalog = self.model_catalog(raw)
+            for provider, entry in patch.items():
+                if not isinstance(entry, dict):
+                    raise ValueError(f"native_fallbacks.{provider} must be an object")
+                if set(entry) != {"model"}:
+                    raise ValueError(f"native_fallbacks.{provider} may contain only model")
+                model = entry["model"]
+                if model == "":
+                    model = None
+                if model is not None and not isinstance(model, str):
+                    raise ValueError(f"native_fallbacks.{provider}.model must be a string or null")
+                if isinstance(model, str):
+                    model = model.strip()
+                    if not model:
+                        model = None
+                if model is not None:
+                    provider_catalog = catalog[provider]
+                    allowed = {item["id"] for item in provider_catalog["models"]}
+                    if not self._valid_model_family(provider, model):
+                        raise ValueError(f"Model is not a valid {provider} model ID")
+                    existing = updated[provider]["model"]
+                    if provider_catalog["status"] == "cached" and model not in allowed:
+                        raise ValueError(f"Choose a model from the {provider} catalog; reload the page to refresh")
+                    if provider_catalog["status"] == "unavailable" and model != existing:
+                        raise ValueError(f"The {provider} catalog is unavailable; only the existing model can be preserved")
+                updated[provider] = {"model": model}
+            raw["native_fallbacks"] = updated
+            self._write(raw)
+            return self.public(raw)
+
+    def _write(self, raw: dict[str, object]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=self.path.parent,
+                prefix=f".{self.path.name}.", suffix=".tmp", delete=False,
+            ) as handle:
+                temp_path = Path(handle.name)
+                json.dump(raw, handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, self.path)
+        except OSError as exc:
+            raise ValueError(f"Could not write Jev config: {exc}") from exc
+        finally:
+            if temp_path and temp_path.exists():
+                temp_path.unlink(missing_ok=True)
 
 
 class DashboardServer(ThreadingHTTPServer):
