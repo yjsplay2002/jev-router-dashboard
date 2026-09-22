@@ -5,6 +5,10 @@ description: Delegate substantial tasks across Claude, Codex, and Grok CLI worke
 
 # Jev task routing
 
+## Prompt provenance
+
+When routing, include the user's original instruction verbatim in the manifest's top-level `user_prompt` field (omit secrets). Preserve task-specific rewrites separately as `tasks[].prompt`; never substitute them for the original. Include `origin_provider`, and an optional `parent_agent` identifier only if known. The runner records dependency-expanded prompts and adapters record the actual CLI-submitted prompt, its hash, session IDs, and reported models. Never invent an observed model from the requested model. Legacy runs may lack these fields; label them unrecorded rather than reconstructing history. This evidence requirement does not change selective routing criteria.
+
 ## Selective routing
 
 Decide locally whether delegation adds meaningful value before invoking Jev. Do not call the classifier just to decide whether to route.

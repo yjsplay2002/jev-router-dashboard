@@ -16,6 +16,34 @@ SPEC.loader.exec_module(dashboard)
 
 
 class DashboardTests(unittest.TestCase):
+    def test_lineage_preserves_unknown_models_and_redacts_prompts(self):
+        task = {"prompt": "task token=private", "expanded_prompt": "expanded secret=private",
+                "execution": {"provider": "codex", "requested_model": "requested-only",
+                              "submitted_prompt": "wrapper password=private", "actual_models": [], "session_ids": ["session-1"]}}
+        normalized = dashboard.normalize_task(task)
+        self.assertEqual(normalized["actual_models"], [])
+        self.assertEqual(normalized["model_observation"], "unknown")
+        self.assertEqual(normalized["requested_model"], "requested-only")
+        for key in ("prompt", "expanded_prompt", "submitted_prompt"):
+            self.assertIn("<redacted>", normalized[key])
+            self.assertNotIn("private", normalized[key])
+        task["execution"]["actual_models"] = ["observed-a", "observed-b"]
+        self.assertEqual(dashboard.normalize_task(task)["model_observation"], "multiple")
+
+    def test_legacy_prompt_artifact_is_confined_to_run_directory(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = root / "run"
+            run_dir.mkdir()
+            outside = root / "prompt.txt"
+            outside.write_text("must not read", encoding="utf-8")
+            task = {"execution": {"prompt_path": str(outside)}}
+            self.assertEqual(dashboard.normalize_task(task, run_dir=run_dir)["submitted_prompt"], "")
+            inside = run_dir / "prompt.txt"
+            inside.write_text("actual delivered prompt", encoding="utf-8")
+            task["execution"]["prompt_path"] = str(inside)
+            self.assertEqual(dashboard.normalize_task(task, run_dir=run_dir)["submitted_prompt"], "actual delivered prompt")
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)

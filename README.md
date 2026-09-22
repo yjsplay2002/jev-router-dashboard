@@ -77,3 +77,8 @@ Confidence threshold is editable from 0 to 100 percent (default 55%). The API st
 On page load the model dropdown reads installed CLI catalogs: Codex models_cache.json (CODEX_HOME when set), Grok models_cache.json, and the newest Claude cache/model-catalog file. It filters by provider and excludes hidden entries. Only model identifiers and labels are exposed; no inference CLI, credential file, or remote model request is used.
 
 These are cached catalogs, not a live account-entitlement check. The UI shows cache time and preserves an existing configured model when it is absent from the catalog. For missing/stale catalogs, refresh the relevant CLI's catalog and reload the page. Choosing another provider requires an explicit model selection.
+# Prompt and execution provenance
+
+New router runs retain top-level `user_prompt` (the original user instruction), `origin_provider`, optional `parent_agent`, and the run-time confidence threshold. Each task retains its rewritten `prompt`, dependency-expanded `expanded_prompt`, and `execution.submitted_prompt` (the exact text handed to the CLI, not the CLI's internally added system/skill context).
+
+The always-open lineage view and SVG dependency graph distinguish Jev recommendation, fallback/override, actual execution provider, requested model, observed model IDs, session IDs, and PID. A requested alias is never presented as an observed model. Missing historical originals/telemetry remain unrecorded; a legacy prompt.txt is read only when confined to its run directory. Prompt text is redacted for display, with explicit truncation notices for expanded/submitted text over 100,000 characters. SHA-256 describes the original stored submitted text, before display redaction.

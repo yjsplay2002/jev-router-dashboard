@@ -17,7 +17,7 @@ function taskHtml(task) {
   const usage = task.usage || {};
   return `<section class="task">
     <div class="task-top"><div><small>${escapeHtml(task.category || "unclassified")} · ${escapeHtml(task.difficulty || "unknown")}</small><h3>${escapeHtml(task.title || task.id || "Untitled task")}</h3></div><span class="badge">${escapeHtml(task.status || "unknown")}</span></div>
-    <div class="route"><div><small>ROUTED TO</small><strong>${escapeHtml(task.selected_by_jev || task.provider || "—")}</strong></div><div><small>OBSERVED MODEL</small><strong>${escapeHtml(task.actual_model || task.requested_model || "unknown")}</strong></div><div><small>EFFORT</small><strong>${escapeHtml(task.effort || "unknown")}</strong></div><div><small>CONFIDENCE</small><strong>${pct(task.confidence)}</strong></div></div>
+    <div class="route"><div><small>ROUTED TO</small><strong>${escapeHtml(task.execution_provider || task.provider || "—")}</strong></div><div><small>OBSERVED MODEL</small><strong>${escapeHtml(observedModels(task))}</strong></div><div><small>EFFORT</small><strong>${escapeHtml(task.effort || "unknown")}</strong></div><div><small>CONFIDENCE</small><strong>${pct(task.confidence)}</strong></div></div>
     ${task.fallback ? `<p class="notice">Fallback: ${escapeHtml(task.fallback_reason || "unspecified")}</p>` : ""}
     <div class="detail-grid"><div><h4>Candidate probabilities</h4>${bars || "<p>No probability data</p>"}</div><div><h4>Execution</h4><dl><dt>Input</dt><dd>${fmt(usage.input_tokens)}</dd><dt>Output</dt><dd>${fmt(usage.output_tokens)}</dd><dt>Cached</dt><dd>${fmt(usage.cached_input_tokens)}</dd><dt>Elapsed</dt><dd>${elapsed(task.elapsed_seconds)}</dd></dl></div></div>
     ${task.result_summary ? `<section class="result"><h4>Result summary</h4><pre>${escapeHtml(task.result_summary)}</pre></section>` : ""}
@@ -25,25 +25,7 @@ function taskHtml(task) {
 }
 
 function evidenceFlowHtml(run) {
-  const tasks = run.tasks || [];
-  if (!tasks.length) return "";
-  const rows = tasks.map((task, index) => {
-    const dependencies = task.depends_on?.length ? `After ${task.depends_on.join(", ")}` : "Root task";
-    const decision = task.selected_by_jev || task.provider || "No decision recorded";
-    const requested = task.requested_model || "not recorded";
-    const observed = task.actual_model || "not observed";
-    const candidateScores = Object.entries(task.probabilities || {}).sort((a, b) => b[1] - a[1]).slice(0, 3)
-      .map(([name, value]) => `<span><b>${escapeHtml(name)}</b><em>${pct(value)}</em></span>`).join("");
-    const fallback = task.fallback ? `<p class="flow-exception">Fallback · ${escapeHtml(task.fallback_reason || "reason not recorded")}</p>` : "";
-    return `<article class="evidence-row">
-      <div class="evidence-node prompt-node"><small>RECORDED TASK PROMPT</small><pre>${escapeHtml(task.prompt || "Prompt was not retained in this run.")}</pre></div>
-      <span class="flow-arrow" aria-hidden="true"></span>
-      <div class="evidence-node split-node"><small>TASK ${index + 1} OF ${tasks.length} · ${escapeHtml(dependencies)}</small><h4>${escapeHtml(task.title || task.id || "Untitled task")}</h4><p>${escapeHtml(task.category || "unclassified")} · ${escapeHtml(task.difficulty || "unknown")}</p><dl><dt>Category confidence</dt><dd>${pct(task.category_confidence)}</dd><dt>Difficulty confidence</dt><dd>${pct(task.difficulty_confidence)}</dd></dl></div>
-      <span class="flow-arrow" aria-hidden="true"></span>
-      <div class="evidence-node decision-node"><small>MODEL DECISION</small><h4>${escapeHtml(decision)}</h4><p>Selection confidence ${pct(task.confidence)}</p>${candidateScores ? `<div class="flow-scores">${candidateScores}</div>` : ""}<dl><dt>Requested</dt><dd>${escapeHtml(requested)}</dd><dt>Observed</dt><dd>${escapeHtml(observed)}</dd><dt>Effort</dt><dd>${escapeHtml(task.effort || "unknown")}</dd></dl>${fallback}</div>
-    </article>`;
-  }).join("");
-  return `<section class="evidence-map" aria-label="Prompt, task decomposition, and model decision diagram"><div class="evidence-map-head"><div><h3>Prompt to model</h3><p>Recorded evidence for how this run became ${tasks.length} task${tasks.length === 1 ? "" : "s"} and reached each worker.</p></div><span>${tasks.length} task${tasks.length === 1 ? "" : "s"}</span></div><div class="flow-origin"><small>RUN MANIFEST</small><strong>${escapeHtml(run.run_id)}</strong><span>${escapeHtml(run.router_model || "router model not recorded")}</span></div><div class="evidence-rows">${rows}</div></section>`;
+  return lineageHtml(run);
 }
 
 function createCard(run) {

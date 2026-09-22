@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 HERE = Path(__file__).resolve().parent.parent
 STATIC_ROOT = HERE / "dashboard"
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,160}$")
@@ -92,13 +92,27 @@ def normalize_usage(raw: object) -> dict[str, int]:
     return result
 
 
-def normalize_task(task: object, include_content: bool = False) -> dict[str, object]:
+def normalize_task(task: object, include_content: bool = False, run_dir: Path | None = None) -> dict[str, object]:
     if not isinstance(task, dict):
         task = {}
     route = task.get("route") if isinstance(task.get("route"), dict) else {}
     execution = task.get("execution") if isinstance(task.get("execution"), dict) else {}
     probabilities = route.get("probabilities") if isinstance(route.get("probabilities"), dict) else {}
     result = execution.get("result", "")
+    submitted = execution.get("submitted_prompt")
+    submitted_source = "run.json" if isinstance(submitted, str) else ""
+    if not isinstance(submitted, str) and run_dir and execution.get("prompt_path"):
+        try:
+            prompt_path = Path(str(execution["prompt_path"])).resolve()
+            if prompt_path.name == "prompt.txt" and prompt_path.is_relative_to(run_dir.resolve()) and prompt_path.stat().st_size <= 1024 * 1024:
+                submitted = prompt_path.read_text(encoding="utf-8")
+                submitted_source = "prompt.txt (legacy execution artifact)"
+        except (OSError, ValueError):
+            pass
+    models = execution.get("actual_models")
+    models = [scrub(m, 160) for m in models if isinstance(m, str)] if isinstance(models, list) else []
+    if execution.get("actual_model") and execution["actual_model"] not in models:
+        models.append(scrub(execution["actual_model"], 160))
     normalized: dict[str, object] = {
         "id": scrub(task.get("id"), 160),
         "title": scrub(task.get("title"), 220),
@@ -114,7 +128,20 @@ def normalize_task(task: object, include_content: bool = False) -> dict[str, obj
             scrub(key, 80): normalize_probability(value)
             for key, value in probabilities.items()
         },
-        "prompt": scrub(task.get("prompt"), 5000),
+        "prompt": scrub(task.get("prompt"), 50000),
+        "expanded_prompt": scrub(task.get("expanded_prompt"), 100000),
+        "submitted_prompt": scrub(submitted, 100000),
+        "submitted_prompt_source": submitted_source,
+        "submitted_prompt_truncated": isinstance(submitted, str) and len(submitted) > 100000,
+        "expanded_prompt_truncated": isinstance(task.get("expanded_prompt"), str) and len(task["expanded_prompt"]) > 100000,
+        "submitted_prompt_sha256": scrub(execution.get("submitted_prompt_sha256"), 64),
+        "execution_provider": scrub(execution.get("provider"), 80),
+        "session_ids": [scrub(v, 160) for v in execution.get("session_ids", []) if isinstance(v, str)] if isinstance(execution.get("session_ids"), list) else [],
+        "process_id": execution.get("process_id") if isinstance(execution.get("process_id"), int) else None,
+        "actual_models": models,
+        "model_evidence_source": scrub(execution.get("model_evidence_source"), 160),
+        "model_observation": "multiple" if len(models) > 1 else "observed" if models else "unknown",
+        "execution_override": scrub(route.get("execution_override"), 80),
         "depends_on": [scrub(value, 160) for value in task.get("depends_on", []) if isinstance(value, str)]
         if isinstance(task.get("depends_on"), list) else [],
         "fallback": bool(route.get("fallback")),
@@ -157,9 +184,13 @@ def normalize_run(raw: object, path: Path, include_content: bool = False) -> dic
         "elapsed_seconds": max(0, safe_number(raw.get("elapsed_seconds"))),
         "policy_version": scrub(raw.get("policy_version"), 160),
         "router_model": router_model,
+        "user_prompt": scrub(raw.get("user_prompt"), 200000),
+        "origin_provider": scrub(raw.get("origin_provider"), 80),
+        "parent_agent": scrub(raw.get("parent_agent"), 200),
+        "confidence_threshold": normalize_probability(raw.get("confidence_threshold")) if raw.get("confidence_threshold") is not None else None,
         "router_usage": normalize_usage(raw.get("router_usage")),
         "task_count": len(tasks),
-        "tasks": [normalize_task(task, include_content) for task in tasks],
+        "tasks": [normalize_task(task, include_content, path.parent) for task in tasks],
         "has_report": has_report,
         "source_mtime": datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(),
     }
