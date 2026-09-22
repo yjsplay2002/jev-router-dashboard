@@ -49,6 +49,9 @@ class DashboardTests(unittest.TestCase):
             },
         }
         self.config_path.write_text(json.dumps(self.config), encoding="utf-8")
+        catalog = self.root / ".codex" / "models_cache.json"
+        catalog.parent.mkdir()
+        catalog.write_text(json.dumps({"models": [{"slug": "gpt-6-astra", "visibility": "list"}]}), encoding="utf-8")
 
     def tearDown(self):
         self.temp.cleanup()
@@ -105,7 +108,7 @@ class DashboardTests(unittest.TestCase):
 
     def test_http_api_and_read_only_guard(self):
         server = dashboard.DashboardServer(
-            ("127.0.0.1", 0), dashboard.RunStore(self.root), dashboard.ConfigStore(self.config_path)
+            ("127.0.0.1", 0), dashboard.RunStore(self.root), dashboard.ConfigStore(self.config_path, model_home=self.root)
         )
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -165,6 +168,7 @@ class DashboardTests(unittest.TestCase):
                 "fallback_provider": "codex",
                 "fallback_model": "gpt-6-astra",
                 "fallback_effort": "medium",
+                "confidence_threshold": 0.3,
             }).encode("utf-8")
             request = urllib.request.Request(
                 base + "/api/config", data=payload, method="PUT",
@@ -175,6 +179,7 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(saved["fallback_model"], "gpt-6-astra")
             on_disk = json.loads(self.config_path.read_text(encoding="utf-8"))
             self.assertEqual(on_disk["fallback_effort"], "medium")
+            self.assertEqual(on_disk["confidence_threshold"], 0.3)
             self.assertEqual(on_disk["secret_setting"], "preserve-me")
             self.assertFalse(list(self.root.glob(".config.json.*.tmp")))
         finally:
@@ -183,7 +188,7 @@ class DashboardTests(unittest.TestCase):
             thread.join(timeout=2)
 
     def test_config_store_rejects_disabled_provider_and_invalid_model(self):
-        store = dashboard.ConfigStore(self.config_path)
+        store = dashboard.ConfigStore(self.config_path, model_home=self.root)
         with self.assertRaisesRegex(ValueError, "enabled provider"):
             store.update({
                 "fallback_provider": "grok", "fallback_model": "grok-model", "fallback_effort": "medium"
@@ -192,6 +197,31 @@ class DashboardTests(unittest.TestCase):
             store.update({
                 "fallback_provider": "codex", "fallback_model": "--danger", "fallback_effort": "medium"
             })
+
+    def test_threshold_bounds_and_catalog_are_validated_without_changing_other_fields(self):
+        catalog = self.root / ".codex" / "models_cache.json"
+        catalog.parent.mkdir(exist_ok=True)
+        catalog.write_text(json.dumps({"models": [
+            {"slug": "test-model", "display_name": "Test", "visibility": "list", "secret": "never expose"},
+            {"slug": "hidden-model", "visibility": "hide"}
+        ]}), encoding="utf-8")
+        store = dashboard.ConfigStore(self.config_path, model_home=self.root)
+        visible = store.public()["model_catalog"]
+        self.assertEqual([m["id"] for m in visible["codex"]["models"]], ["test-model"])
+        self.assertNotIn("never expose", json.dumps(visible))
+        self.assertEqual(visible["claude"]["models"][0]["source"], "configured")
+        patch = {"fallback_provider": "codex", "fallback_model": "test-model", "fallback_effort": "medium"}
+        for value in (0, 0.3, 0.55, 0.9, 1):
+            self.assertEqual(store.update(dict(patch, confidence_threshold=value))["confidence_threshold"], value)
+        before = self.config_path.read_bytes()
+        for value in (-1, 1.01, float("nan"), float("inf"), True, "0.5", None):
+            with self.assertRaisesRegex(ValueError, "Confidence threshold"):
+                store.update(dict(patch, confidence_threshold=value))
+            self.assertEqual(before, self.config_path.read_bytes())
+        with self.assertRaisesRegex(ValueError, "catalog"):
+            store.update(dict(patch, fallback_model="other-provider-model"))
+        catalog.write_text("broken", encoding="utf-8")
+        self.assertEqual(store.public()["model_catalog"]["codex"]["models"][0]["id"], "test-model")
 
     def test_dashboard_is_always_open_and_polling_does_not_overlap(self):
         markup = (ROOT / "dashboard" / "index.html").read_text(encoding="utf-8")

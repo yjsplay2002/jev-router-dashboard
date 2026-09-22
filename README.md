@@ -70,3 +70,10 @@ python -m unittest discover -s tests -v
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+# Policy editor
+
+Confidence threshold is editable from 0 to 100 percent (default 55%). The API stores it as a number from 0 to 1. Higher thresholds trigger fallback more often. Changes apply to new routing tasks, not historical runs.
+
+On page load the model dropdown reads installed CLI catalogs: Codex models_cache.json (CODEX_HOME when set), Grok models_cache.json, and the newest Claude cache/model-catalog file. It filters by provider and excludes hidden entries. Only model identifiers and labels are exposed; no inference CLI, credential file, or remote model request is used.
+
+These are cached catalogs, not a live account-entitlement check. The UI shows cache time and preserves an existing configured model when it is absent from the catalog. For missing/stale catalogs, refresh the relevant CLI's catalog and reload the page. Choosing another provider requires an explicit model selection.

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 const state = { runs: [], query: "", status: "", cards: new Map(), firstLoad: true };
 const poll = { timer: null, inflight: null, delay: 2500, min: 2500, max: 30000 };
-const configState = { current: null, busy: true };
+const configState = { current: null, busy: true, catalog: {} };
 const $ = (id) => document.getElementById(id);
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const fmt = (n) => new Intl.NumberFormat().format(Number(n || 0));
@@ -171,11 +171,12 @@ function configPayload() {
     fallback_provider: $("fallbackProvider").value,
     fallback_model: $("fallbackModel").value.trim(),
     fallback_effort: $("fallbackEffort").value,
+    confidence_threshold: Number($("thresholdInput").value) / 100,
   };
 }
 
 function updateSaveState() {
-  const controls = [$("fallbackProvider"), $("fallbackModel"), $("fallbackEffort")];
+  const controls = [$("fallbackProvider"), $("fallbackModel"), $("fallbackEffort"), $("thresholdInput")];
   controls.forEach(control => { control.disabled = configState.busy || !configState.current; });
   const changed = configState.current && JSON.stringify(configPayload()) !== JSON.stringify(configState.current);
   $("saveSettings").disabled = configState.busy || !changed || !$("settingsForm").checkValidity();
@@ -188,18 +189,31 @@ function updateSaveState() {
   }
 }
 
+function renderModels(selected = "") {
+  const catalog = configState.catalog[$("fallbackProvider").value] || {models: []};
+  const models = catalog.models || [];
+  const select = $("fallbackModel");
+  select.replaceChildren(new Option(models.length ? "Choose a model" : "No models found — refresh the CLI catalog", ""), ...models.map(model => new Option(`${model.label} — ${model.id}`, model.id)));
+  select.value = models.some(model => model.id === selected) ? selected : "";
+  $("modelCatalogNote").textContent = catalog.status === "cached"
+    ? `CLI model cache updated ${when(catalog.updated_at)}. Loaded on page open; account access may have changed.`
+    : "CLI model catalog unavailable. Only the existing configured model, if any, is retained. Open this provider's CLI to refresh its catalog, then reload this page.";
+}
+
 function renderConfig(config) {
   const provider = $("fallbackProvider");
   const effort = $("fallbackEffort");
   provider.replaceChildren(...(config.providers || []).map(value => new Option(value, value)));
   effort.replaceChildren(...(config.efforts || []).map(value => new Option(value, value)));
   provider.value = config.fallback_provider || "";
-  $("fallbackModel").value = config.fallback_model || "";
+  configState.catalog = config.model_catalog || {};
+  renderModels(config.fallback_model || "");
+  $("thresholdInput").value = Number((Number(config.confidence_threshold ?? 0.55) * 100).toFixed(8));
   effort.value = config.fallback_effort || "";
   configState.current = configPayload();
   configState.busy = false;
   $("confidenceThreshold").textContent = pct(config.confidence_threshold);
-  $("configPath").textContent = `Writing only fallback fields in ${config.config_path}`;
+  $("configPath").textContent = `Writing only fallback fields and confidence threshold in ${config.config_path}`;
   updateSaveState();
 }
 
@@ -278,5 +292,12 @@ $("refresh").addEventListener("click", () => tick(true));
 $("settingsForm").addEventListener("input", updateSaveState);
 $("settingsForm").addEventListener("change", updateSaveState);
 $("settingsForm").addEventListener("submit", saveConfig);
+$("fallbackProvider").addEventListener("change", () => {
+  renderModels(configState.current?.fallback_provider === $("fallbackProvider").value ? configState.current.fallback_model : "");
+  updateSaveState();
+});
+$("thresholdInput").addEventListener("input", () => {
+  $("confidenceThreshold").textContent = $("thresholdInput").validity.valid ? `${$("thresholdInput").value}%` : "a valid threshold";
+});
 document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(true); });
 Promise.allSettled([loadHealth(), loadConfig()]).finally(() => tick(false));

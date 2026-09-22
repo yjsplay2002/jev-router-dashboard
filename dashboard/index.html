@@ -36,10 +36,13 @@
       </div>
       <form id="settingsForm">
         <label class="provider-field"><span>Provider</span><select id="fallbackProvider" name="fallback_provider" required disabled></select></label>
-        <label class="model-field"><span>Model</span><input id="fallbackModel" name="fallback_model" type="text" autocomplete="off" spellcheck="false" placeholder="gpt-6-astra" required disabled></label>
+        <label class="model-field"><span>Model</span><select id="fallbackModel" name="fallback_model" aria-describedby="modelCatalogNote" required disabled></select></label>
+        <label class="threshold-field"><span>Confidence threshold (%)</span><input id="thresholdInput" name="confidence_threshold" type="number" min="0" max="100" step="any" value="55" required disabled aria-describedby="thresholdHelp"></label>
         <label class="effort-field"><span>Reasoning effort</span><select id="fallbackEffort" name="fallback_effort" required disabled></select></label>
         <button id="saveSettings" type="submit" disabled>Save policy</button>
       </form>
+      <p class="settings-note" id="thresholdHelp">Default 55%. Higher values use fallback more often; lower values accept more Jev selections.</p>
+      <p class="settings-note" id="modelCatalogNote" role="status">Loading CLI model catalogs...</p>
       <p class="settings-note" id="configPath"></p>
       <p class="settings-message" id="settingsMessage" role="status" aria-live="polite"></p>
     </section>

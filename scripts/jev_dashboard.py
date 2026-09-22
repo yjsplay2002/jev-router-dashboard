@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import math
 import os
 import re
 import socket
@@ -20,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 HERE = Path(__file__).resolve().parent.parent
 STATIC_ROOT = HERE / "dashboard"
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,160}$")
@@ -250,9 +251,51 @@ class RunStore:
 class ConfigStore:
     """Expose and update only the fallback policy fields in Jev's config."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, model_home: Path | None = None):
         self.path = path.expanduser().resolve()
+        self.model_home = model_home or Path.home()
         self._lock = threading.Lock()
+
+    def model_catalog(self, raw: dict[str, object]) -> dict[str, object]:
+        """Read only model catalogs; never launch inference or expose credential fields."""
+        result = {}
+        for provider in self._options(raw)[0]:
+            models = {}
+            stamp = None
+            try:
+                if provider == "codex":
+                    root = Path(os.environ.get("CODEX_HOME", self.model_home / ".codex")) if self.model_home == Path.home() else self.model_home / ".codex"
+                    path = root / "models_cache.json"
+                elif provider == "grok":
+                    path = self.model_home / ".grok" / "models_cache.json"
+                elif provider == "claude":
+                    candidates = list((self.model_home / ".claude" / "cache" / "model-catalog").glob("*.json"))
+                    path = max(candidates, key=lambda p: p.stat().st_mtime)
+                else:
+                    raise ValueError("No catalog adapter")
+                if path.stat().st_size > 8 * 1024 * 1024:
+                    raise ValueError("Catalog too large")
+                cached = json.loads(path.read_text(encoding="utf-8"))
+                stamp = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+                entries = cached.get("models", [])
+                if provider == "claude":
+                    entries = cached["catalog"]["config"]["models"]
+                if isinstance(entries, dict):
+                    entries = [item.get("info", {}) for item in entries.values() if isinstance(item, dict)]
+                for item in entries:
+                    if not isinstance(item, dict) or item.get("hidden") or item.get("visibility") == "hide":
+                        continue
+                    model_id = item.get("slug") or item.get("id")
+                    if isinstance(model_id, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/\[\]-]{0,159}", model_id):
+                        models[model_id] = {"id": model_id, "label": scrub(item.get("display_name") or item.get("name") or model_id, 160), "source": "cli_cache"}
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                pass
+            if raw.get("fallback_provider") == provider and raw.get("fallback_model"):
+                current = str(raw["fallback_model"])
+                models.setdefault(current, {"id": current, "label": current + " (current; not in catalog)", "source": "configured"})
+            result[provider] = {"models": list(models.values()), "updated_at": stamp,
+                                "status": "cached" if stamp else "unavailable"}
+        return result
 
     def _read(self) -> dict[str, object]:
         try:
@@ -287,32 +330,40 @@ class ConfigStore:
             "fallback_effort": raw.get("fallback_effort") or "",
             "providers": providers,
             "efforts": efforts,
-            "confidence_threshold": safe_number(raw.get("confidence_threshold")),
+            "confidence_threshold": safe_number(raw.get("confidence_threshold", 0.55)),
+            "model_catalog": self.model_catalog(raw),
             "config_path": scrub(self.path),
         }
 
     def update(self, patch: object) -> dict[str, object]:
         if not isinstance(patch, dict):
             raise ValueError("Request body must be a JSON object")
-        allowed = {"fallback_provider", "fallback_model", "fallback_effort"}
-        if set(patch) != allowed:
-            raise ValueError("Provide fallback_provider, fallback_model, and fallback_effort")
+        required = {"fallback_provider", "fallback_model", "fallback_effort"}
+        if not required.issubset(patch) or set(patch) - required - {"confidence_threshold"}:
+            raise ValueError("Provide fallback_provider, fallback_model, fallback_effort and optionally confidence_threshold")
         with self._lock:
             raw = self._read()
             providers, efforts = self._options(raw)
             provider = patch.get("fallback_provider")
             model = patch.get("fallback_model")
             effort = patch.get("fallback_effort")
+            threshold = patch.get("confidence_threshold", raw.get("confidence_threshold", 0.55))
+            if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not math.isfinite(threshold) or not 0 <= threshold <= 1:
+                raise ValueError("Confidence threshold must be a finite number between 0 and 1")
             if not isinstance(provider, str) or provider not in providers:
                 raise ValueError("Choose an enabled provider")
             if not isinstance(model, str) or not model.strip() or model.lstrip().startswith("-"):
                 raise ValueError("Model must be a non-empty model ID and cannot begin with '-'")
             if not isinstance(effort, str) or effort not in efforts:
                 raise ValueError("Choose an enabled reasoning effort")
+            catalog = self.model_catalog(raw)[provider]["models"]
+            if model.strip() not in {item["id"] for item in catalog}:
+                raise ValueError("Choose a model from this provider's catalog; reload the page to refresh")
             raw.update({
                 "fallback_provider": provider,
                 "fallback_model": model.strip(),
                 "fallback_effort": effort,
+                "confidence_threshold": threshold,
             })
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temp_path: Path | None = None
