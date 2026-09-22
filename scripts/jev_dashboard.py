@@ -388,7 +388,8 @@ class ConfigStore:
 
 class DashboardServer(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    # Windows SO_REUSEADDR can allow two listeners to serve different API versions.
+    allow_reuse_address = os.name != "nt"
 
     def __init__(self, address: tuple[str, int], store: RunStore, config: ConfigStore | None = None):
         self.store = store
