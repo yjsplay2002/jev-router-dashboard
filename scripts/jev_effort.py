@@ -207,6 +207,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=1.0, help="Wall-clock cap in seconds (default 1.0)")
     parser.add_argument("--json", action="store_true", help="Also print the run.json route fragment")
     args = parser.parse_args(argv)
+    # A cp949/cp1252 console must not turn a Korean task description into a crash or "??".
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
 
     home = router_home()
     config = read_config(args.config or home / "config.json")
