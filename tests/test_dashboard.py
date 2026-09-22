@@ -77,17 +77,6 @@ class DashboardTests(unittest.TestCase):
             },
         }
         self.config_path.write_text(json.dumps(self.config), encoding="utf-8")
-        catalog = self.root / ".codex" / "models_cache.json"
-        catalog.parent.mkdir()
-        catalog.write_text(json.dumps({"models": [{"slug": "gpt-6-astra", "visibility": "list"}]}), encoding="utf-8")
-        claude_catalog = self.root / ".claude" / "cache" / "model-catalog" / "catalog.json"
-        claude_catalog.parent.mkdir(parents=True)
-        claude_catalog.write_text(json.dumps({"catalog": {"config": {"models": [
-            {"id": "claude-sonnet-4-5"}, {"id": "sonnet", "name": "Sonnet alias"}
-        ]}}}), encoding="utf-8")
-        grok_catalog = self.root / ".grok" / "models_cache.json"
-        grok_catalog.parent.mkdir()
-        grok_catalog.write_text(json.dumps({"models": [{"id": "grok-4"}]}), encoding="utf-8")
 
     def tearDown(self):
         self.temp.cleanup()
@@ -111,6 +100,40 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(normalized["probabilities"]["codex_medium"], 0.73)
         self.assertEqual(normalized["probabilities"]["claude_medium"], 0.12)
         self.assertEqual(normalized["depends_on"], ["prepare"])
+
+    def test_legacy_native_worker_record_is_not_blank(self):
+        legacy = self.root / "native-legacy"
+        legacy.mkdir()
+        (legacy / "run.json").write_text(json.dumps({
+            "mode": "native",
+            "execution_backend": "native_subagent",
+            "origin_provider": "Codex",
+            "parent_identity": "/root",
+            "user_prompt": "legacy native run",
+            "workers": [{
+                "task": "strategy_review",
+                "provider": "OpenAI/Codex",
+                "requested_model": "gpt-5.6-sol",
+                "requested_effort": "high",
+                "observed_model": None,
+                "agent_id": "/root/strategy_review",
+                "native_tool": "collaboration.spawn_agent",
+                "outcome": "review completed; parent verified",
+            }],
+        }), encoding="utf-8")
+        item = next(i for i in dashboard.RunStore(self.root).list() if i["run_id"] == "native-legacy")
+        self.assertEqual(item["status"], "completed")
+        self.assertTrue(item["started_at"])
+        self.assertEqual(item["parent_agent"], "/root")
+        self.assertEqual(item["task_count"], 1)
+        task = item["tasks"][0]
+        self.assertEqual(task["title"], "strategy_review")
+        self.assertEqual(task["requested_model"], "gpt-5.6-sol")
+        self.assertEqual(task["effort"], "high")
+        self.assertEqual(task["session_ids"], ["/root/strategy_review"])
+        self.assertEqual(task["model_evidence_source"], "collaboration.spawn_agent")
+        self.assertEqual(task["model_observation"], "unknown")
+        self.assertIn("review completed", task["result_summary"])
 
     def test_malformed_run_is_visible_not_fatal(self):
         bad = self.root / "bad"
@@ -165,7 +188,7 @@ class DashboardTests(unittest.TestCase):
 
     def test_live_api_discovers_a_new_run_without_restart(self):
         server = dashboard.DashboardServer(
-            ("127.0.0.1", 0), dashboard.RunStore(self.root), dashboard.ConfigStore(self.config_path)
+            ("127.0.0.1", 0), dashboard.RunStore(self.root), dashboard.ConfigStore(self.config_path, model_home=self.root)
         )
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -188,7 +211,7 @@ class DashboardTests(unittest.TestCase):
 
     def test_config_api_exposes_only_safe_fields_and_updates_atomically(self):
         server = dashboard.DashboardServer(
-            ("127.0.0.1", 0), dashboard.RunStore(self.root), dashboard.ConfigStore(self.config_path)
+            ("127.0.0.1", 0), dashboard.RunStore(self.root), dashboard.ConfigStore(self.config_path, model_home=self.root)
         )
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -196,15 +219,12 @@ class DashboardTests(unittest.TestCase):
         try:
             with urllib.request.urlopen(base + "/api/config") as response:
                 visible = json.load(response)
-            self.assertEqual(visible["fallback_provider"], "claude")
-            self.assertEqual(visible["providers"], ["claude", "codex"])
+            self.assertEqual(set(visible), {"native_fallbacks", "effort_options", "config_path"})
+            self.assertEqual(visible["effort_options"], ["low", "medium", "high"])
             self.assertNotIn("secret_setting", visible)
 
             payload = json.dumps({
-                "fallback_provider": "codex",
-                "fallback_model": "gpt-6-astra",
-                "fallback_effort": "medium",
-                "confidence_threshold": 0.3,
+                "native_fallbacks": {"codex": {"effort": "high"}},
             }).encode("utf-8")
             request = urllib.request.Request(
                 base + "/api/config", data=payload, method="PUT",
@@ -212,10 +232,10 @@ class DashboardTests(unittest.TestCase):
             )
             with urllib.request.urlopen(request) as response:
                 saved = json.load(response)
-            self.assertEqual(saved["fallback_model"], "gpt-6-astra")
+            self.assertEqual(saved["native_fallbacks"]["codex"]["effort"], "high")
             on_disk = json.loads(self.config_path.read_text(encoding="utf-8"))
-            self.assertEqual(on_disk["fallback_effort"], "medium")
-            self.assertEqual(on_disk["confidence_threshold"], 0.3)
+            self.assertEqual(on_disk["fallback_effort"], "high")
+            self.assertEqual(on_disk["confidence_threshold"], 0.55)
             self.assertEqual(on_disk["secret_setting"], "preserve-me")
             self.assertFalse(list(self.root.glob(".config.json.*.tmp")))
         finally:
@@ -223,36 +243,34 @@ class DashboardTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=2)
 
-    def test_config_store_rejects_disabled_provider_and_invalid_model(self):
+    def test_removed_policy_is_rejected_without_writing(self):
         store = dashboard.ConfigStore(self.config_path, model_home=self.root)
-        with self.assertRaisesRegex(ValueError, "enabled provider"):
-            store.update({
-                "fallback_provider": "grok", "fallback_model": "grok-model", "fallback_effort": "medium"
-            })
-        with self.assertRaisesRegex(ValueError, "cannot begin"):
-            store.update({
-                "fallback_provider": "codex", "fallback_model": "--danger", "fallback_effort": "medium"
-            })
+        before = self.config_path.read_bytes()
+        for patch in ({"fallback_provider": "codex", "fallback_model": "gpt-6-astra", "fallback_effort": "medium"},
+                      {"confidence_threshold": 0.5},
+                      {"native_fallbacks": {}, "fallback_model": "gpt-6-astra"}):
+            with self.assertRaisesRegex(ValueError, "only native_fallbacks"):
+                store.update(patch)
+            self.assertEqual(self.config_path.read_bytes(), before)
 
     def test_native_fallbacks_are_independent_partial_and_resettable(self):
         store = dashboard.ConfigStore(self.config_path, model_home=self.root)
         visible = store.public()
         self.assertEqual(visible["native_fallbacks"], {
-            "codex": {"model": None}, "claude": {"model": None}, "grok": {"model": None},
+            "codex": {"effort": None}, "claude": {"effort": None}, "grok": {"effort": None},
         })
-        self.assertEqual(set(visible["model_catalog"]), {"codex", "claude", "grok"})
-        self.assertEqual(store.update({"native_fallbacks": {"codex": {"model": "gpt-6-astra"}}})
-                         ["native_fallbacks"]["codex"]["model"], "gpt-6-astra")
-        store.update({"native_fallbacks": {"claude": {"model": "sonnet"}}})
-        saved = store.update({"native_fallbacks": {"grok": {"model": "grok-4"}}})
+        self.assertEqual(store.update({"native_fallbacks": {"codex": {"effort": "high"}}})
+                         ["native_fallbacks"]["codex"]["effort"], "high")
+        store.update({"native_fallbacks": {"claude": {"effort": "low"}}})
+        saved = store.update({"native_fallbacks": {"grok": {"effort": "medium"}}})
         self.assertEqual(saved["native_fallbacks"], {
-            "codex": {"model": "gpt-6-astra"},
-            "claude": {"model": "sonnet"},
-            "grok": {"model": "grok-4"},
+            "codex": {"effort": "high"},
+            "claude": {"effort": "low"},
+            "grok": {"effort": "medium"},
         })
-        reset = store.update({"native_fallbacks": {"claude": {"model": ""}, "grok": {"model": None}}})
-        self.assertIsNone(reset["native_fallbacks"]["claude"]["model"])
-        self.assertIsNone(reset["native_fallbacks"]["grok"]["model"])
+        reset = store.update({"native_fallbacks": {"claude": {"effort": ""}, "grok": {"effort": None}}})
+        self.assertIsNone(reset["native_fallbacks"]["claude"]["effort"])
+        self.assertIsNone(reset["native_fallbacks"]["grok"]["effort"])
         on_disk = json.loads(self.config_path.read_text(encoding="utf-8"))
         self.assertEqual(on_disk["fallback_provider"], "claude")
         self.assertEqual(on_disk["fallback_model"], "claude-default")
@@ -261,51 +279,18 @@ class DashboardTests(unittest.TestCase):
     def test_native_fallback_validation_is_atomic_and_provider_scoped(self):
         store = dashboard.ConfigStore(self.config_path, model_home=self.root)
         invalid = [
-            {"native_fallbacks": {"other": {"model": "gpt-6-astra"}}},
-            {"native_fallbacks": {"codex": {"model": "claude-sonnet-4-5"}}},
-            {"native_fallbacks": {"claude": {"model": "grok-4"}}},
-            {"native_fallbacks": {"grok": {"model": "gpt-6-astra"}}},
-            {"native_fallbacks": {"codex": {"model": 1}}},
-            {"native_fallbacks": {"codex": {"model": "gpt-6-astra", "extra": True}}},
+            {"native_fallbacks": {"other": {"effort": "high"}}},
+            {"native_fallbacks": {"codex": {"effort": "extreme"}}},
+            {"native_fallbacks": {"claude": {"effort": "gpt-6-astra"}}},
+            {"native_fallbacks": {"codex": {"effort": 1}}},
+            {"native_fallbacks": {"codex": {"model": "gpt-6-astra"}}},
+            {"native_fallbacks": {"codex": {"effort": "high", "extra": True}}},
         ]
         before = self.config_path.read_bytes()
         for payload in invalid:
             with self.assertRaises(ValueError):
                 store.update(payload)
             self.assertEqual(self.config_path.read_bytes(), before)
-
-    def test_native_claude_rejects_foreign_legacy_and_polluted_catalog_models(self):
-        raw = json.loads(self.config_path.read_text(encoding="utf-8"))
-        raw["fallback_provider"] = "claude"
-        raw["fallback_model"] = "gpt-6-astra"
-        self.config_path.write_text(json.dumps(raw), encoding="utf-8")
-        claude_catalog = self.root / ".claude" / "cache" / "model-catalog" / "catalog.json"
-        claude_catalog.write_text(json.dumps({"catalog": {"config": {"models": [
-            {"id": "claude-sonnet-4-5"}, {"id": "sonnet"},
-            {"id": "gpt-6-astra"}, {"id": "arbitrary-alias"},
-        ]}}}), encoding="utf-8")
-        store = dashboard.ConfigStore(self.config_path, model_home=self.root)
-        ids = {item["id"] for item in store.public()["model_catalog"]["claude"]["models"]}
-        self.assertIn("claude-sonnet-4-5", ids)
-        self.assertIn("sonnet", ids)
-        self.assertNotIn("gpt-6-astra", ids)
-        self.assertNotIn("arbitrary-alias", ids)
-        before = self.config_path.read_bytes()
-        for model in ("gpt-6-astra", "arbitrary-alias"):
-            with self.assertRaisesRegex(ValueError, "valid claude"):
-                store.update({"native_fallbacks": {"claude": {"model": model}}})
-            self.assertEqual(self.config_path.read_bytes(), before)
-
-    def test_existing_known_claude_alias_survives_unavailable_catalog(self):
-        raw = json.loads(self.config_path.read_text(encoding="utf-8"))
-        raw["native_fallbacks"] = {"claude": {"model": "opusplan"}}
-        self.config_path.write_text(json.dumps(raw), encoding="utf-8")
-        (self.root / ".claude" / "cache" / "model-catalog" / "catalog.json").unlink()
-        store = dashboard.ConfigStore(self.config_path, model_home=self.root)
-        saved = store.update({"native_fallbacks": {"claude": {"model": "opusplan"}}})
-        self.assertEqual(saved["native_fallbacks"]["claude"]["model"], "opusplan")
-        with self.assertRaisesRegex(ValueError, "catalog is unavailable"):
-            store.update({"native_fallbacks": {"claude": {"model": "sonnet"}}})
 
     def test_native_fallback_http_put_preserves_legacy_config(self):
         server = dashboard.DashboardServer(
@@ -315,13 +300,13 @@ class DashboardTests(unittest.TestCase):
         thread.start()
         base = f"http://127.0.0.1:{server.server_port}"
         try:
-            payload = json.dumps({"native_fallbacks": {"grok": {"model": "grok-4"}}}).encode("utf-8")
+            payload = json.dumps({"native_fallbacks": {"grok": {"effort": "low"}}}).encode("utf-8")
             request = urllib.request.Request(base + "/api/config", data=payload, method="PUT",
                                              headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(request) as response:
                 saved = json.load(response)
-            self.assertEqual(saved["native_fallbacks"]["grok"]["model"], "grok-4")
-            self.assertEqual(saved["fallback_model"], "claude-default")
+            self.assertEqual(saved["native_fallbacks"]["grok"]["effort"], "low")
+            self.assertNotIn("fallback_model", saved)
             on_disk = json.loads(self.config_path.read_text(encoding="utf-8"))
             self.assertEqual(on_disk["fallback_effort"], "high")
             self.assertEqual(on_disk["secret_setting"], "preserve-me")
@@ -330,32 +315,6 @@ class DashboardTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=2)
 
-    def test_threshold_bounds_and_catalog_are_validated_without_changing_other_fields(self):
-        catalog = self.root / ".codex" / "models_cache.json"
-        catalog.parent.mkdir(exist_ok=True)
-        catalog.write_text(json.dumps({"models": [
-            {"slug": "gpt-test-model", "display_name": "Test", "visibility": "list", "secret": "never expose"},
-            {"slug": "hidden-model", "visibility": "hide"}
-        ]}), encoding="utf-8")
-        store = dashboard.ConfigStore(self.config_path, model_home=self.root)
-        visible = store.public()["model_catalog"]
-        self.assertEqual([m["id"] for m in visible["codex"]["models"]], ["gpt-test-model"])
-        self.assertNotIn("never expose", json.dumps(visible))
-        self.assertTrue(any(m["id"] == "claude-default" and m["source"] == "configured"
-                            for m in visible["claude"]["models"]))
-        patch = {"fallback_provider": "codex", "fallback_model": "gpt-test-model", "fallback_effort": "medium"}
-        for value in (0, 0.3, 0.55, 0.9, 1):
-            self.assertEqual(store.update(dict(patch, confidence_threshold=value))["confidence_threshold"], value)
-        before = self.config_path.read_bytes()
-        for value in (-1, 1.01, float("nan"), float("inf"), True, "0.5", None):
-            with self.assertRaisesRegex(ValueError, "Confidence threshold"):
-                store.update(dict(patch, confidence_threshold=value))
-            self.assertEqual(before, self.config_path.read_bytes())
-        with self.assertRaisesRegex(ValueError, "catalog"):
-            store.update(dict(patch, fallback_model="other-provider-model"))
-        catalog.write_text("broken", encoding="utf-8")
-        self.assertEqual(store.public()["model_catalog"]["codex"]["models"][0]["id"], "gpt-test-model")
-
     def test_dashboard_is_always_open_and_polling_does_not_overlap(self):
         markup = (ROOT / "dashboard" / "index.html").read_text(encoding="utf-8")
         script = (ROOT / "dashboard" / "app.js").read_text(encoding="utf-8")
@@ -363,7 +322,10 @@ class DashboardTests(unittest.TestCase):
         self.assertNotIn('class="run-body" hidden', markup)
         self.assertNotIn("setInterval(", script)
         self.assertIn("if (poll.inflight)", script)
-        self.assertIn('id="settingsForm"', markup)
+        self.assertIn('id="nativeSettingsForm"', markup)
+        self.assertNotIn("Legacy CLI fallback policy", markup)
+        self.assertIn('id="nativeEffort-codex"', markup)
+        self.assertNotIn("nativeModel-", markup)
         self.assertIn('method: "PUT"', script)
         self.assertIn("function evidenceFlowHtml", script)
         self.assertIn("value > 1 ? value / 100 : value", script)

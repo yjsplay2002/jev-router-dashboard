@@ -10,7 +10,7 @@
   <!--
   THESIS: Routing history reads as a calibrated decision ledger, not a generic card dashboard.
   OWN-WORLD: Paper-white work surface, graphite type, cobalt registration rules, and coral exception marks.
-  STORY: Verify aggregate health, tune the low-confidence fallback policy, then read the complete live decision ledger.
+  STORY: Verify aggregate health, set each provider's fallback effort, then read the complete live decision ledger.
   FIRST VIEWPORT: Product title and privacy state lead; telemetry and an always-open policy workbench precede the live decision rail.
   FORM: Router trace ledger, assigned direction 7, seed d45f7a32.
   FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
@@ -29,51 +29,31 @@
     <section class="settings native-settings" aria-labelledby="nativeSettingsTitle">
       <div class="settings-intro">
         <div>
-          <h2 id="nativeSettingsTitle">Provider fallback models</h2>
-          <p>Set a separate default for each provider's native subagents. A fallback stays within its parent provider.</p>
+          <h2 id="nativeSettingsTitle">Provider fallback effort</h2>
+          <p>Jev routes the reasoning effort; the parent's model is always inherited unchanged. These levels apply whenever Jev does not answer within the 1 second cap.</p>
         </div>
         <span class="settings-state" id="nativeSettingsState">Loading defaults...</span>
       </div>
       <form id="nativeSettingsForm" class="native-defaults">
         <div class="native-default-row">
-          <label for="nativeModel-codex">Codex</label>
-          <div class="native-model-control"><select id="nativeModel-codex" name="codex" aria-describedby="nativeNote-codex" disabled></select><p id="nativeNote-codex" class="settings-note">Loading model options...</p></div>
+          <label for="nativeEffort-codex">Codex</label>
+          <div class="native-model-control"><select id="nativeEffort-codex" name="codex" aria-describedby="nativeNote-codex" disabled></select><p id="nativeNote-codex" class="settings-note">Loading effort options...</p></div>
         </div>
         <div class="native-default-row">
-          <label for="nativeModel-claude">Claude</label>
-          <div class="native-model-control"><select id="nativeModel-claude" name="claude" aria-describedby="nativeNote-claude" disabled></select><p id="nativeNote-claude" class="settings-note">Loading model options...</p></div>
+          <label for="nativeEffort-claude">Claude</label>
+          <div class="native-model-control"><select id="nativeEffort-claude" name="claude" aria-describedby="nativeNote-claude" disabled></select><p id="nativeNote-claude" class="settings-note">Loading effort options...</p></div>
         </div>
         <div class="native-default-row">
-          <label for="nativeModel-grok">Grok</label>
-          <div class="native-model-control"><select id="nativeModel-grok" name="grok" aria-describedby="nativeNote-grok" disabled></select><p id="nativeNote-grok" class="settings-note">Loading model options...</p></div>
+          <label for="nativeEffort-grok">Grok</label>
+          <div class="native-model-control"><select id="nativeEffort-grok" name="grok" aria-describedby="nativeNote-grok" disabled></select><p id="nativeNote-grok" class="settings-note">Loading effort options...</p></div>
         </div>
-        <div class="native-actions"><button id="saveNativeSettings" type="submit" disabled>Save provider defaults</button><button id="reloadNativeSettings" type="button">Reload model options</button></div>
+        <div class="native-actions"><button id="saveNativeSettings" type="submit" disabled>Save provider defaults</button><button id="reloadNativeSettings" type="button">Reload effort options</button></div>
       </form>
-      <p class="settings-note">Options come from local model catalogs. The parent checks native availability before dispatch. An unset or unavailable default keeps fallback work with the parent.</p>
+      <p class="settings-note">Levels come from Jev's own <code>efforts</code> list. A host with no effort parameter records that it was unsupported. An unset level leaves the fallback choice with the parent.</p>
       <p id="nativeSettingsMessage" class="settings-message" role="status" aria-live="polite"></p>
     </section>
-    <section class="settings" aria-labelledby="settingsTitle">
-      <div class="settings-intro">
-        <div>
-          <h2 id="settingsTitle">Legacy CLI fallback policy</h2>
-          <p>For explicitly invoked legacy CLI runs only; native subagents use the provider defaults above. Legacy fallback starts below <strong id="confidenceThreshold">the configured threshold</strong>.</p>
-        </div>
-        <span class="settings-state" id="settingsState">Loading config...</span>
-      </div>
-      <form id="settingsForm">
-        <label class="provider-field"><span>Provider</span><select id="fallbackProvider" name="fallback_provider" required disabled></select></label>
-        <label class="model-field"><span>Model</span><select id="fallbackModel" name="fallback_model" aria-describedby="modelCatalogNote" required disabled></select></label>
-        <label class="threshold-field"><span>Confidence threshold (%)</span><input id="thresholdInput" name="confidence_threshold" type="number" min="0" max="100" step="any" value="55" required disabled aria-describedby="thresholdHelp"></label>
-        <label class="effort-field"><span>Reasoning effort</span><select id="fallbackEffort" name="fallback_effort" required disabled></select></label>
-        <button id="saveSettings" type="submit" disabled>Save policy</button>
-      </form>
-      <p class="settings-note" id="thresholdHelp">Default 55%. Higher values use fallback more often; lower values accept more Jev selections.</p>
-      <p class="settings-note" id="modelCatalogNote" role="status">Loading CLI model catalogs...</p>
-      <p class="settings-note" id="configPath"></p>
-      <p class="settings-message" id="settingsMessage" role="status" aria-live="polite"></p>
-    </section>
     <section class="toolbar">
-      <input id="search" type="search" placeholder="Search run, task, provider, model…" aria-label="Search">
+      <input id="search" type="search" placeholder="Search run, task, provider, effort…" aria-label="Search">
       <select id="status" aria-label="Filter status"><option value="">All statuses</option></select>
       <button id="refresh" type="button">Refresh</button>
     </section>

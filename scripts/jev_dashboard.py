@@ -114,12 +114,12 @@ def normalize_task(task: object, include_content: bool = False, run_dir: Path | 
     if execution.get("actual_model") and execution["actual_model"] not in models:
         models.append(scrub(execution["actual_model"], 160))
     normalized: dict[str, object] = {
-        "id": scrub(task.get("id"), 160),
-        "title": scrub(task.get("title"), 220),
+        "id": scrub(task.get("id") or task.get("task"), 160),
+        "title": scrub(task.get("title") or task.get("task") or task.get("id"), 220),
         "difficulty": scrub(task.get("difficulty"), 80),
         "category": scrub(task.get("category"), 80),
         "provider": scrub(task.get("provider") or execution.get("provider"), 80),
-        "effort": scrub(route.get("effort") or execution.get("requested_effort"), 80),
+        "effort": scrub(route.get("effort") or execution.get("requested_effort") or task.get("requested_effort"), 80),
         "selected_by_jev": scrub(route.get("selected_by_jev"), 120),
         "confidence": normalize_probability(route.get("confidence")),
         "difficulty_confidence": normalize_probability(route.get("difficulty_confidence")),
@@ -136,10 +136,10 @@ def normalize_task(task: object, include_content: bool = False, run_dir: Path | 
         "expanded_prompt_truncated": isinstance(task.get("expanded_prompt"), str) and len(task["expanded_prompt"]) > 100000,
         "submitted_prompt_sha256": scrub(execution.get("submitted_prompt_sha256"), 64),
         "execution_provider": scrub(execution.get("provider"), 80),
-        "session_ids": [scrub(v, 160) for v in execution.get("session_ids", []) if isinstance(v, str)] if isinstance(execution.get("session_ids"), list) else [],
+        "session_ids": [scrub(v, 160) for v in execution.get("session_ids", []) if isinstance(v, str)] if isinstance(execution.get("session_ids"), list) else [scrub(v, 160) for v in (execution.get("agent_id"), task.get("agent_id")) if isinstance(v, str)],
         "process_id": execution.get("process_id") if isinstance(execution.get("process_id"), int) else None,
         "actual_models": models,
-        "model_evidence_source": scrub(execution.get("model_evidence_source"), 160),
+        "model_evidence_source": scrub(execution.get("model_evidence_source") or execution.get("tool") or task.get("native_tool"), 160),
         "model_observation": "multiple" if len(models) > 1 else "observed" if models else "unknown",
         "execution_override": scrub(route.get("execution_override"), 80),
         "depends_on": [scrub(value, 160) for value in task.get("depends_on", []) if isinstance(value, str)]
@@ -148,13 +148,13 @@ def normalize_task(task: object, include_content: bool = False, run_dir: Path | 
         "fallback_reason": scrub(route.get("fallback_reason"), 160),
         "model_source": scrub(route.get("model_source"), 120),
         "effort_source": scrub(route.get("effort_source"), 120),
-        "status": scrub(execution.get("status") or task.get("status"), 80),
-        "actual_model": scrub(execution.get("actual_model"), 160),
-        "requested_model": scrub(execution.get("requested_model") or route.get("requested_model") or task.get("model"), 160),
+        "status": scrub(execution.get("status") or task.get("status") or ("completed" if task.get("outcome") else ""), 80),
+        "actual_model": scrub(execution.get("actual_model") or task.get("observed_model"), 160),
+        "requested_model": scrub(execution.get("requested_model") or route.get("requested_model") or task.get("model") or task.get("requested_model"), 160),
         "elapsed_seconds": max(0, safe_number(execution.get("elapsed_seconds"))),
         "exit_code": execution.get("exit_code"),
         "usage": normalize_usage(execution.get("usage")),
-        "result_summary": scrub(result, 600),
+        "result_summary": scrub(result or task.get("outcome"), 600),
     }
     if include_content:
         normalized["result"] = scrub(result, 10000)
@@ -164,7 +164,7 @@ def normalize_task(task: object, include_content: bool = False, run_dir: Path | 
 def normalize_run(raw: object, path: Path, include_content: bool = False) -> dict[str, object]:
     if not isinstance(raw, dict):
         raise ValueError("run.json root must be an object")
-    tasks = raw.get("tasks") if isinstance(raw.get("tasks"), list) else []
+    tasks = raw.get("tasks") if isinstance(raw.get("tasks"), list) else raw.get("workers") if isinstance(raw.get("workers"), list) else []
     router_calls = raw.get("router_calls") if isinstance(raw.get("router_calls"), list) else []
     router_model = ""
     if router_calls and isinstance(router_calls[0], dict):
@@ -179,14 +179,14 @@ def normalize_run(raw: object, path: Path, include_content: bool = False) -> dic
     return {
         "run_id": scrub(raw.get("run_id") or path.parent.name, 160),
         "mode": scrub(raw.get("mode"), 80),
-        "status": scrub(raw.get("status"), 80),
-        "started_at": scrub(raw.get("started_at"), 80),
+        "status": scrub(raw.get("status") or ("completed" if tasks else ""), 80),
+        "started_at": scrub(raw.get("started_at") or raw.get("recorded_at") or datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(), 80),
         "elapsed_seconds": max(0, safe_number(raw.get("elapsed_seconds"))),
         "policy_version": scrub(raw.get("policy_version"), 160),
         "router_model": router_model,
         "user_prompt": scrub(raw.get("user_prompt"), 200000),
         "origin_provider": scrub(raw.get("origin_provider"), 80),
-        "parent_agent": scrub(raw.get("parent_agent"), 200),
+        "parent_agent": scrub(raw.get("parent_agent") or raw.get("parent_identity"), 200),
         "confidence_threshold": normalize_probability(raw.get("confidence_threshold")) if raw.get("confidence_threshold") is not None else None,
         "router_usage": normalize_usage(raw.get("router_usage")),
         "task_count": len(tasks),
@@ -280,83 +280,36 @@ class RunStore:
 
 
 class ConfigStore:
-    """Expose and update only the fallback policy fields in Jev's config."""
+    """Expose and update only the per-provider fallback effort in Jev's config."""
 
     NATIVE_PROVIDERS = ("codex", "claude", "grok")
-    CLAUDE_ALIASES = frozenset({"sonnet", "opus", "haiku", "opusplan"})
-    MODEL_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/\[\]-]{0,159}")
+    DEFAULT_EFFORTS = ("low", "medium", "high")
 
     def __init__(self, path: Path, model_home: Path | None = None):
         self.path = path.expanduser().resolve()
         self.model_home = model_home or Path.home()
         self._lock = threading.Lock()
 
-    def model_catalog(self, raw: dict[str, object]) -> dict[str, object]:
-        """Read only model catalogs; never launch inference or expose credential fields."""
-        result = {}
-        native_fallbacks = self._native_fallbacks(raw)
-        for provider in self.NATIVE_PROVIDERS:
-            models = {}
-            stamp = None
-            try:
-                if provider == "codex":
-                    root = Path(os.environ.get("CODEX_HOME", self.model_home / ".codex")) if self.model_home == Path.home() else self.model_home / ".codex"
-                    path = root / "models_cache.json"
-                elif provider == "grok":
-                    path = self.model_home / ".grok" / "models_cache.json"
-                elif provider == "claude":
-                    candidates = list((self.model_home / ".claude" / "cache" / "model-catalog").glob("*.json"))
-                    path = max(candidates, key=lambda p: p.stat().st_mtime)
-                else:
-                    raise ValueError("No catalog adapter")
-                if path.stat().st_size > 8 * 1024 * 1024:
-                    raise ValueError("Catalog too large")
-                cached = json.loads(path.read_text(encoding="utf-8"))
-                stamp = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
-                entries = cached.get("models", [])
-                if provider == "claude":
-                    entries = cached["catalog"]["config"]["models"]
-                if isinstance(entries, dict):
-                    entries = [item.get("info", {}) for item in entries.values() if isinstance(item, dict)]
-                for item in entries:
-                    if not isinstance(item, dict) or item.get("hidden") or item.get("visibility") == "hide":
-                        continue
-                    model_id = item.get("slug") or item.get("id")
-                    if (isinstance(model_id, str)
-                            and self._valid_model_family(provider, model_id)):
-                        models[model_id] = {"id": model_id, "label": scrub(item.get("display_name") or item.get("name") or model_id, 160), "source": "cli_cache"}
-            except (OSError, ValueError, KeyError, TypeError, AttributeError):
-                pass
-            if raw.get("fallback_provider") == provider and raw.get("fallback_model"):
-                current = str(raw["fallback_model"])
-                if self._valid_model_family(provider, current):
-                    models.setdefault(current, {"id": current, "label": current + " (legacy configured; not in catalog)", "source": "configured"})
-            current_native = native_fallbacks[provider]["model"]
-            if current_native and self._valid_model_family(provider, current_native):
-                models.setdefault(current_native, {"id": current_native, "label": current_native + " (current; not in catalog)", "source": "configured"})
-            result[provider] = {"models": list(models.values()), "updated_at": stamp,
-                                "status": "cached" if stamp else "unavailable"}
-        return result
-
     @classmethod
-    def _valid_model_family(cls, provider: str, model: str) -> bool:
-        if not cls.MODEL_ID_RE.fullmatch(model):
-            return False
-        if provider == "codex":
-            return model.startswith(("gpt-", "o1", "o3", "o4"))
-        if provider == "claude":
-            return model.startswith("claude-") or model in cls.CLAUDE_ALIASES
-        return provider == "grok" and model.startswith("grok-")
+    def effort_options(cls, raw: dict[str, object]) -> list[str]:
+        """The effort levels this installation routes between, from Jev's own config."""
+        efforts = raw.get("efforts")
+        if isinstance(efforts, list):
+            valid = [e for e in efforts if isinstance(e, str) and e and len(e) <= 40]
+            if valid:
+                return list(dict.fromkeys(valid))
+        return list(cls.DEFAULT_EFFORTS)
 
     @classmethod
     def _native_fallbacks(cls, raw: dict[str, object]) -> dict[str, dict[str, str | None]]:
         stored = raw.get("native_fallbacks")
         stored = stored if isinstance(stored, dict) else {}
+        options = cls.effort_options(raw)
         result: dict[str, dict[str, str | None]] = {}
         for provider in cls.NATIVE_PROVIDERS:
             entry = stored.get(provider)
-            model = entry.get("model") if isinstance(entry, dict) else None
-            result[provider] = {"model": model if isinstance(model, str) else None}
+            effort = entry.get("effort") if isinstance(entry, dict) else None
+            result[provider] = {"effort": effort if isinstance(effort, str) and effort in options else None}
         return result
 
     def _read(self) -> dict[str, object]:
@@ -370,31 +323,11 @@ class ConfigStore:
             raise ValueError("Jev config must contain a JSON object")
         return raw
 
-    @staticmethod
-    def _options(raw: dict[str, object]) -> tuple[list[str], list[str]]:
-        provider_config = raw.get("providers")
-        providers = []
-        if isinstance(provider_config, dict):
-            providers = [
-                str(name) for name, details in provider_config.items()
-                if isinstance(details, dict) and details.get("enabled", True) is not False
-            ]
-        efforts = raw.get("efforts")
-        allowed_efforts = [str(value) for value in efforts] if isinstance(efforts, list) else []
-        return providers, allowed_efforts
-
     def public(self, raw: dict[str, object] | None = None) -> dict[str, object]:
         raw = raw or self._read()
-        providers, efforts = self._options(raw)
         return {
-            "fallback_provider": raw.get("fallback_provider", ""),
-            "fallback_model": raw.get("fallback_model") or "",
-            "fallback_effort": raw.get("fallback_effort") or "",
             "native_fallbacks": self._native_fallbacks(raw),
-            "providers": providers,
-            "efforts": efforts,
-            "confidence_threshold": safe_number(raw.get("confidence_threshold", 0.55)),
-            "model_catalog": self.model_catalog(raw),
+            "effort_options": self.effort_options(raw),
             "config_path": scrub(self.path),
         }
 
@@ -403,52 +336,7 @@ class ConfigStore:
             raise ValueError("Request body must be a JSON object")
         if set(patch) == {"native_fallbacks"}:
             return self._update_native(patch["native_fallbacks"])
-        required = {"fallback_provider", "fallback_model", "fallback_effort"}
-        if not required.issubset(patch) or set(patch) - required - {"confidence_threshold"}:
-            raise ValueError("Provide fallback_provider, fallback_model, fallback_effort and optionally confidence_threshold")
-        with self._lock:
-            raw = self._read()
-            providers, efforts = self._options(raw)
-            provider = patch.get("fallback_provider")
-            model = patch.get("fallback_model")
-            effort = patch.get("fallback_effort")
-            threshold = patch.get("confidence_threshold", raw.get("confidence_threshold", 0.55))
-            if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not math.isfinite(threshold) or not 0 <= threshold <= 1:
-                raise ValueError("Confidence threshold must be a finite number between 0 and 1")
-            if not isinstance(provider, str) or provider not in providers:
-                raise ValueError("Choose an enabled provider")
-            if not isinstance(model, str) or not model.strip() or model.lstrip().startswith("-"):
-                raise ValueError("Model must be a non-empty model ID and cannot begin with '-'")
-            if not isinstance(effort, str) or effort not in efforts:
-                raise ValueError("Choose an enabled reasoning effort")
-            catalog = self.model_catalog(raw)[provider]["models"]
-            if model.strip() not in {item["id"] for item in catalog}:
-                raise ValueError("Choose a model from this provider's catalog; reload the page to refresh")
-            raw.update({
-                "fallback_provider": provider,
-                "fallback_model": model.strip(),
-                "fallback_effort": effort,
-                "confidence_threshold": threshold,
-            })
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            temp_path: Path | None = None
-            try:
-                with tempfile.NamedTemporaryFile(
-                    mode="w", encoding="utf-8", dir=self.path.parent,
-                    prefix=f".{self.path.name}.", suffix=".tmp", delete=False,
-                ) as handle:
-                    temp_path = Path(handle.name)
-                    json.dump(raw, handle, ensure_ascii=False, indent=2)
-                    handle.write("\n")
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                os.replace(temp_path, self.path)
-            except OSError as exc:
-                raise ValueError(f"Could not write Jev config: {exc}") from exc
-            finally:
-                if temp_path and temp_path.exists():
-                    temp_path.unlink(missing_ok=True)
-            return self.public(raw)
+        raise ValueError("Provide only native_fallbacks")
 
     def _update_native(self, patch: object) -> dict[str, object]:
         if not isinstance(patch, dict):
@@ -459,32 +347,20 @@ class ConfigStore:
         with self._lock:
             raw = self._read()
             updated = self._native_fallbacks(raw)
-            catalog = self.model_catalog(raw)
+            options = self.effort_options(raw)
             for provider, entry in patch.items():
                 if not isinstance(entry, dict):
                     raise ValueError(f"native_fallbacks.{provider} must be an object")
-                if set(entry) != {"model"}:
-                    raise ValueError(f"native_fallbacks.{provider} may contain only model")
-                model = entry["model"]
-                if model == "":
-                    model = None
-                if model is not None and not isinstance(model, str):
-                    raise ValueError(f"native_fallbacks.{provider}.model must be a string or null")
-                if isinstance(model, str):
-                    model = model.strip()
-                    if not model:
-                        model = None
-                if model is not None:
-                    provider_catalog = catalog[provider]
-                    allowed = {item["id"] for item in provider_catalog["models"]}
-                    if not self._valid_model_family(provider, model):
-                        raise ValueError(f"Model is not a valid {provider} model ID")
-                    existing = updated[provider]["model"]
-                    if provider_catalog["status"] == "cached" and model not in allowed:
-                        raise ValueError(f"Choose a model from the {provider} catalog; reload the page to refresh")
-                    if provider_catalog["status"] == "unavailable" and model != existing:
-                        raise ValueError(f"The {provider} catalog is unavailable; only the existing model can be preserved")
-                updated[provider] = {"model": model}
+                if set(entry) != {"effort"}:
+                    raise ValueError(f"native_fallbacks.{provider} may contain only effort")
+                effort = entry["effort"]
+                if effort is not None and not isinstance(effort, str):
+                    raise ValueError(f"native_fallbacks.{provider}.effort must be a string or null")
+                if isinstance(effort, str):
+                    effort = effort.strip() or None
+                if effort is not None and effort not in options:
+                    raise ValueError(f"Choose an effort from {options}")
+                updated[provider] = {"effort": effort}
             raw["native_fallbacks"] = updated
             self._write(raw)
             return self.public(raw)

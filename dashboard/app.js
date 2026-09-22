@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 const state = { runs: [], query: "", status: "", cards: new Map(), firstLoad: true };
 const poll = { timer: null, inflight: null, delay: 2500, min: 2500, max: 30000 };
-const configState = { current: null, busy: true, catalog: {} };
 const nativeState = { current: null, busy: true };
 const nativeProviders = ["codex", "claude", "grok"];
 const $ = (id) => document.getElementById(id);
@@ -19,7 +18,7 @@ function taskHtml(task) {
   const usage = task.usage || {};
   return `<section class="task">
     <div class="task-top"><div><small>${escapeHtml(task.category || "unclassified")} · ${escapeHtml(task.difficulty || "unknown")}</small><h3>${escapeHtml(task.title || task.id || "Untitled task")}</h3></div><span class="badge">${escapeHtml(task.status || "unknown")}</span></div>
-    <div class="route"><div><small>ROUTED TO</small><strong>${escapeHtml(task.execution_provider || task.provider || "—")}</strong></div><div><small>OBSERVED MODEL</small><strong>${escapeHtml(observedModels(task))}</strong></div><div><small>EFFORT</small><strong>${escapeHtml(task.effort || "unknown")}</strong></div><div><small>CONFIDENCE</small><strong>${pct(task.confidence)}</strong></div></div>
+    <div class="route"><div><small>ROUTED TO</small><strong>${escapeHtml(task.execution_provider || task.provider || "—")}</strong></div><div><small>INHERITED MODEL</small><strong>${escapeHtml(observedModels(task))}</strong></div><div><small>EFFORT</small><strong>${escapeHtml(effortLabel(task))}</strong></div><div><small>CONFIDENCE</small><strong>${pct(task.confidence)}</strong></div></div>
     ${task.fallback ? `<p class="notice">Fallback: ${escapeHtml(task.fallback_reason || "unspecified")}</p>` : ""}
     <div class="detail-grid"><div><h4>Candidate probabilities</h4>${bars || "<p>No probability data</p>"}</div><div><h4>Execution</h4><dl><dt>Input</dt><dd>${fmt(usage.input_tokens)}</dd><dt>Output</dt><dd>${fmt(usage.output_tokens)}</dd><dt>Cached</dt><dd>${fmt(usage.cached_input_tokens)}</dd><dt>Elapsed</dt><dd>${elapsed(task.elapsed_seconds)}</dd></dl></div></div>
     ${task.result_summary ? `<section class="result"><h4>Result summary</h4><pre>${escapeHtml(task.result_summary)}</pre></section>` : ""}
@@ -150,14 +149,24 @@ async function loadHealth(signal) {
   $("subtitle").textContent = health.runs_dir;
 }
 
+const EFFORT_SOURCES = { jev: "jev", user_setting: "your setting" };
+
+function effortLabel(task) {
+  // The model is inherited, so effort is the only routed field: always say who chose it.
+  const effort = task.effort || "unsupported";
+  const source = EFFORT_SOURCES[task.effort_source] || (task.fallback ? "fallback" : "");
+  const reason = task.fallback && task.fallback_reason ? `: ${task.fallback_reason}` : "";
+  return source ? `${effort} (${source}${reason})` : effort;
+}
+
 function nativePayload() {
   return { native_fallbacks: Object.fromEntries(nativeProviders.map(provider =>
-    [provider, { model: $(`nativeModel-${provider}`).value || null }])) };
+    [provider, { effort: $(`nativeEffort-${provider}`).value || null }])) };
 }
 
 function updateNativeState() {
   nativeProviders.forEach(provider => {
-    $(`nativeModel-${provider}`).disabled = nativeState.busy || !nativeState.current;
+    $(`nativeEffort-${provider}`).disabled = nativeState.busy || !nativeState.current;
   });
   const changed = nativeState.current && JSON.stringify(nativePayload()) !== JSON.stringify(nativeState.current);
   $("saveNativeSettings").disabled = nativeState.busy || !changed;
@@ -170,19 +179,18 @@ function updateNativeState() {
 
 function renderNativeConfig(config) {
   nativeProviders.forEach(provider => {
-    const selected = config.native_fallbacks?.[provider]?.model || "";
-    const catalog = config.model_catalog?.[provider] || {};
-    const models = catalog.models || [];
-    const select = $(`nativeModel-${provider}`);
+    const selected = config.native_fallbacks?.[provider]?.effort || "";
+    const options = config.effort_options || [];
+    const select = $(`nativeEffort-${provider}`);
     select.replaceChildren(new Option("No default — parent handles fallback", ""),
-      ...models.map(model => new Option(`${model.label} — ${model.id}`, model.id)));
-    if (selected && !models.some(model => model.id === selected)) {
-      select.add(new Option(`${selected} (saved; verify availability)`, selected));
+      ...options.map(effort => new Option(effort, effort)));
+    if (selected && !options.includes(selected)) {
+      select.add(new Option(`${selected} (saved; not in this config)`, selected));
     }
     select.value = selected;
-    $(`nativeNote-${provider}`).textContent = catalog.status === "cached"
-      ? `Local catalog updated ${when(catalog.updated_at)}. Native availability is checked at dispatch.`
-      : "No local catalog available. Keep the saved model or clear the default, then reload after updating the catalog.";
+    $(`nativeNote-${provider}`).textContent = options.length
+      ? `Applied when Jev misses the 1s cap. The ${provider} model is inherited, never routed.`
+      : "No effort levels configured. Add an efforts list to Jev's config, then reload.";
   });
   nativeState.current = nativePayload();
   nativeState.busy = false;
@@ -192,21 +200,21 @@ function renderNativeConfig(config) {
 async function loadNativeConfig() {
   // Reload only this form; do not discard unsaved provider defaults silently.
   if (nativeState.current && JSON.stringify(nativePayload()) !== JSON.stringify(nativeState.current)) {
-    $("nativeSettingsMessage").textContent = "Save your changed defaults before reloading model options.";
+    $("nativeSettingsMessage").textContent = "Save your changed defaults before reloading effort options.";
     return;
   }
   nativeState.busy = true;
   updateNativeState();
   try {
     renderNativeConfig(await fetchJson("/api/config"));
-    $("nativeSettingsMessage").textContent = "Model options reloaded.";
+    $("nativeSettingsMessage").textContent = "Effort options reloaded.";
     $("nativeSettingsMessage").dataset.tone = "ready";
   } catch (error) {
     nativeState.busy = false;
     updateNativeState();
     $("nativeSettingsState").textContent = "Defaults unavailable";
     $("nativeSettingsState").dataset.tone = "error";
-    $("nativeSettingsMessage").textContent = `${error.message}. Reload model options to try again.`;
+    $("nativeSettingsMessage").textContent = `${error.message}. Reload effort options to try again.`;
     $("nativeSettingsMessage").dataset.tone = "error";
   }
 }
@@ -222,7 +230,7 @@ async function saveNativeConfig(event) {
       method: "PUT", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(nativePayload()),
     }));
-    $("nativeSettingsMessage").textContent = "Provider defaults saved. New native fallback decisions will read these settings.";
+    $("nativeSettingsMessage").textContent = "Fallback effort saved. It applies whenever Jev misses the 1s cap.";
     $("nativeSettingsMessage").dataset.tone = "ready";
   } catch (error) {
     nativeState.busy = false;
@@ -231,99 +239,6 @@ async function saveNativeConfig(event) {
     $("nativeSettingsState").dataset.tone = "error";
     $("nativeSettingsMessage").textContent = `${error.message}. Your edits are kept; review them and save again.`;
     $("nativeSettingsMessage").dataset.tone = "error";
-  }
-}
-
-function configPayload() {
-  return {
-    fallback_provider: $("fallbackProvider").value,
-    fallback_model: $("fallbackModel").value.trim(),
-    fallback_effort: $("fallbackEffort").value,
-    confidence_threshold: Number($("thresholdInput").value) / 100,
-  };
-}
-
-function updateSaveState() {
-  const controls = [$("fallbackProvider"), $("fallbackModel"), $("fallbackEffort"), $("thresholdInput")];
-  controls.forEach(control => { control.disabled = configState.busy || !configState.current; });
-  const changed = configState.current && JSON.stringify(configPayload()) !== JSON.stringify(configState.current);
-  $("saveSettings").disabled = configState.busy || !changed || !$("settingsForm").checkValidity();
-  if (!configState.busy && changed) {
-    $("settingsState").textContent = "Unsaved changes";
-    $("settingsState").dataset.tone = "pending";
-  } else if (!configState.busy && configState.current) {
-    $("settingsState").textContent = "Config synced";
-    $("settingsState").dataset.tone = "ready";
-  }
-}
-
-function renderModels(selected = "") {
-  const catalog = configState.catalog[$("fallbackProvider").value] || {models: []};
-  const models = catalog.models || [];
-  const select = $("fallbackModel");
-  select.replaceChildren(new Option(models.length ? "Choose a model" : "No models found — refresh the CLI catalog", ""), ...models.map(model => new Option(`${model.label} — ${model.id}`, model.id)));
-  select.value = models.some(model => model.id === selected) ? selected : "";
-  $("modelCatalogNote").textContent = catalog.status === "cached"
-    ? `CLI model cache updated ${when(catalog.updated_at)}. Loaded on page open; account access may have changed.`
-    : "CLI model catalog unavailable. Only the existing configured model, if any, is retained. Open this provider's CLI to refresh its catalog, then reload this page.";
-}
-
-function renderConfig(config) {
-  const provider = $("fallbackProvider");
-  const effort = $("fallbackEffort");
-  provider.replaceChildren(...(config.providers || []).map(value => new Option(value, value)));
-  effort.replaceChildren(...(config.efforts || []).map(value => new Option(value, value)));
-  provider.value = config.fallback_provider || "";
-  configState.catalog = config.model_catalog || {};
-  renderModels(config.fallback_model || "");
-  $("thresholdInput").value = Number((Number(config.confidence_threshold ?? 0.55) * 100).toFixed(8));
-  effort.value = config.fallback_effort || "";
-  configState.current = configPayload();
-  configState.busy = false;
-  $("confidenceThreshold").textContent = pct(config.confidence_threshold);
-  $("configPath").textContent = `Writing only fallback fields and confidence threshold in ${config.config_path}`;
-  updateSaveState();
-}
-
-async function loadConfig() {
-  configState.busy = true;
-  updateSaveState();
-  try {
-    renderConfig(await fetchJson("/api/config"));
-  } catch (error) {
-    configState.busy = false;
-    $("settingsState").textContent = "Config unavailable";
-    $("settingsState").dataset.tone = "error";
-    $("settingsMessage").textContent = `${error.message}. Start the dashboard with --config pointing to Jev's config.json.`;
-    $("settingsMessage").dataset.tone = "error";
-    updateSaveState();
-  }
-}
-
-async function saveConfig(event) {
-  event.preventDefault();
-  if (!$("settingsForm").reportValidity()) return;
-  configState.busy = true;
-  $("settingsState").textContent = "Saving...";
-  $("settingsState").dataset.tone = "pending";
-  $("settingsMessage").textContent = "";
-  updateSaveState();
-  try {
-    const config = await fetchJson("/api/config", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(configPayload()),
-    });
-    renderConfig(config);
-    $("settingsMessage").textContent = "Fallback policy saved. New routing tasks will use it immediately.";
-    $("settingsMessage").dataset.tone = "ready";
-  } catch (error) {
-    configState.busy = false;
-    $("settingsMessage").textContent = `${error.message}. Review the fields and try again.`;
-    $("settingsMessage").dataset.tone = "error";
-    updateSaveState();
-    $("settingsState").textContent = "Save failed";
-    $("settingsState").dataset.tone = "error";
   }
 }
 
@@ -357,18 +272,8 @@ function tick(manual = false) {
 $("search").addEventListener("input", event => { state.query = event.target.value; applyFilters(); });
 $("status").addEventListener("change", event => { state.status = event.target.value; applyFilters(); });
 $("refresh").addEventListener("click", () => tick(true));
-$("settingsForm").addEventListener("input", updateSaveState);
-$("settingsForm").addEventListener("change", updateSaveState);
-$("settingsForm").addEventListener("submit", saveConfig);
 $("nativeSettingsForm").addEventListener("change", updateNativeState);
 $("nativeSettingsForm").addEventListener("submit", saveNativeConfig);
 $("reloadNativeSettings").addEventListener("click", loadNativeConfig);
-$("fallbackProvider").addEventListener("change", () => {
-  renderModels(configState.current?.fallback_provider === $("fallbackProvider").value ? configState.current.fallback_model : "");
-  updateSaveState();
-});
-$("thresholdInput").addEventListener("input", () => {
-  $("confidenceThreshold").textContent = $("thresholdInput").validity.valid ? `${$("thresholdInput").value}%` : "a valid threshold";
-});
 document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(true); });
-Promise.allSettled([loadHealth(), loadConfig(), loadNativeConfig()]).finally(() => tick(false));
+Promise.allSettled([loadHealth(), loadNativeConfig()]).finally(() => tick(false));

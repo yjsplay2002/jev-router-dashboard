@@ -16,7 +16,7 @@ Developers and agent operators who use Jev Router and need to audit how their ta
 
 ## Product Purpose
 
-Make Jev's existing local `run.json` records quickly understandable: what classification was assigned, which provider/model/effort was selected, why fallback occurred, what the worker used, and whether the task succeeded.
+Make Jev's existing local `run.json` records quickly understandable: which reasoning effort was selected and by whom, which model was inherited, why fallback occurred, what the subagent did, and whether the task succeeded. The model is never routed, so a model change is never presented as a routing decision.
 
 ## Positioning
 
@@ -29,8 +29,8 @@ The dashboard runs beside the Jev CLI on a developer workstation and reads `~/.c
 ## Capabilities and Constraints
 
 - Read existing Jev `run.json` files without modifying them.
-- Display classification, routing probabilities, provider/model/effort, fallback, status, duration, and token usage.
-- Display sanitized recorded prompts, task dependencies, and model decisions as an always-open evidence flow.
+- Display routing probabilities, the routed effort and its source, the inherited model, fallback, status, duration, and token usage.
+- Display sanitized recorded prompts, task dependencies, and effort decisions as an always-open evidence flow.
 - Bind to loopback only and make no outbound requests.
 - Tolerate missing, historical, or malformed records.
 - Keep recorded prompts visible in the local-only evidence flow while redacting common secret patterns.

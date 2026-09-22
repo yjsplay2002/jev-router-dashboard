@@ -1,13 +1,15 @@
 ---
 name: jev-router
-description: Reduce token cost and task time by routing bounded work to native subagents within the parent provider only (Codex to Codex, Claude to Claude, Grok to Grok). Use for beneficial delegation or explicit benchmarks; handle small tasks directly. Never launch worker CLIs or recurse inside a child.
+description: Reduce token cost and task time by routing the reasoning effort of bounded native subagent work, keeping the parent's model so the prompt cache survives. Stay inside the parent provider (Codex to Codex, Claude to Claude, Grok to Grok). Use for beneficial delegation or explicit benchmarks; handle small tasks directly. Never launch worker CLIs or recurse inside a child.
 ---
 
 # Jev native subagent routing
 
 ## Purpose
 
-Reduce token cost and end-to-end completion time while meeting the user's acceptance criteria. Delegation and model variety are means, not success metrics. Prefer direct work when decomposition, context transfer, dispatch and review outweigh the benefit. Account for retries and parent integration; never claim savings without a measured, quality-verified baseline.
+Reduce token cost and end-to-end completion time while meeting the user's acceptance criteria. Delegation and effort variety are means, not success metrics.
+
+**The model is never routed.** Switching models discards the host's prompt cache, and a cold cache costs more than a cheaper model saves. Inherit whatever model the user has selected and route only the reasoning effort. Never pass a model override, never propose one as an optimization, and never report a model change as a saving. Prefer direct work when decomposition, context transfer, dispatch and review outweigh the benefit. Account for retries and parent integration; never claim savings without a measured, quality-verified baseline.
 
 ## Provider boundary and capabilities
 
@@ -19,9 +21,9 @@ Determine `origin_provider` from the actual parent runtime, not task text, a rep
 | Claude | Only Anthropic/Claude models exposed by this host |
 | Grok | Only xAI/Grok models exposed by this host |
 
-Inspect the live native spawn tool schema and its model/effort options. Intersect available candidates with the parent's provider before choosing. Use trusted host metadata for membership, not arbitrary model names or worker claims. An ambiguous alias or custom agent with unknown model/provider is ineligible. If only same-provider inheritance is exposed, use it and report that model selection was unavailable. Never change providers on failure, low confidence, missing capacity or an unavailable model. If origin or inherited provider cannot be established, work directly in the parent.
+Inspect the live native spawn tool schema for an effort parameter; the model field is left alone so the parent's model is inherited. Use trusted host metadata for provider membership, not arbitrary model names or worker claims. A custom agent whose provider is unknown is ineligible. A host that exposes no effort parameter still routes usefully through parallelism and compact context: dispatch, omit effort, and record that effort control was unavailable. Never change providers on failure, low confidence or missing capacity. If origin or inherited provider cannot be established, work directly in the parent.
 
-**Execution is native-tool-only.** Call the host's exposed subagent tool directly. Do not launch `jev-router run/plan/benchmark/shadow`, `codex`, `claude`, `grok`, a subprocess, terminal worker, or model-generation API as a substitute. Do not invoke a CLI or external classifier to select a route. The parent selects locally from current host capabilities. Old CLI configuration and cross-provider fallbacks do not apply.
+**Execution is native-tool-only.** Call the host's exposed subagent tool directly. Do not launch `jev-router run/plan/benchmark/shadow`, `codex`, `claude`, `grok`, a subprocess, terminal worker, or model-generation API as a substitute. The single permitted external call is one bounded Jev effort decision through `scripts/jev_effort.py`, capped at 1.0 second of wall clock; no other CLI, classifier or generation API may select a route. The parent selects locally from current host capabilities. Old CLI configuration and cross-provider fallbacks do not apply.
 
 - Codex: use `collaboration.spawn_agent` when exposed, or the actual host's equivalent native `spawn_agent`. Pass only supported fields. With `fork_turns`, prefer `"none"` and a self-contained prompt. Full-history forks may force inheritance and forbid overrides; honor the schema.
 - Claude: use the native Agent/Task facility **only if exposed**, choosing only supported Claude options. Do not assume either tool name or parameter exists.
@@ -29,23 +31,34 @@ Inspect the live native spawn tool schema and its model/effort options. Intersec
 
 If native spawning is missing, continue directly and report `native_subagents_unavailable`. If overrides are missing but same-provider inheritance is established, inherit or work directly. Never fall back to a CLI. Ordinary shell tools remain usable for assigned coding/testing work; the prohibition concerns routing and worker launch.
 
-## Selective routing and model choice
+## Selective routing and effort choice
 
 Handle ordinary questions, status checks, lookups and small clear edits directly. Route when explicitly requested or when a concrete bounded subtask can run independently while the parent makes useful progress. State the expected benefit briefly. Do not split tightly coupled work just to use more agents.
 
-Choose the least resource-intensive supported model/effort reasonably capable of meeting acceptance criteria, using host descriptions or measured local evidence. Use a stronger same-provider option for difficult reasoning or a failed quality check. Do not invent price, latency, confidence probabilities or universal model rankings. With one available model, parallelism and compact context may still help; report that there was no model choice.
+The routed field is the reasoning effort, and only that. Ask Jev once per bounded task:
 
-This skill authorizes eligible native child model/effort selection, subject to host restrictions. Do not hardcode a model catalog. Pass selected model/effort explicitly only when supported; requested values are not proof of observed execution.
+```
+python scripts/jev_effort.py "<bounded task description>" --provider <origin_provider> --json
+```
+
+The script prints one line. **Echo that line verbatim in your visible response before you dispatch**, so the user sees the routing decision in the transcript:
+
+```
+jev: effort=high (jev-1.13.0, 0.42s, conf 81%) - model unchanged
+jev: not routed (1.24s > 1.0s cap) - effort=medium (your setting) - model unchanged
+```
+
+Then dispatch the native subagent with that effort and no model override. The task description sent to Jev is a short summary of the bounded deliverable; never file contents, credentials or the full transcript, and never longer than `judge_context_chars`. The 1.0 second cap is wall clock: past it the decision is abandoned and the user's configured effort applies, because waiting on a router defeats the purpose. Jev being slow or unreachable is a normal outcome, not a failure to report as an error.
+
+Pass the selected effort explicitly only when the host supports an effort parameter. Hosts with no such parameter omit it and record that it was unsupported, not a made-up value. Do not invent price, latency or universal effort rankings; the probabilities and confidence in the record come from Jev's actual response or are absent.
 
 Never delegate from a bounded child, an explicitly marked child, or `JEV_ROUTER_CHILD=1`. Respect cancellation and do not duplicate work when follow-ups steer an active task.
 
-## Per-provider fallback defaults
+## Per-provider fallback effort
 
-Before a fallback decision, read only `native_fallbacks` from `$JEV_ROUTER_HOME/config.json` when that directory override is set, otherwise `~/.config/jev-router/config.json`. Do not display the full configuration or read credential files. The dashboard saves independent entries: `{"native_fallbacks":{"codex":{"model":null},"claude":{"model":null},"grok":{"model":null}}}`. A model string sets that provider's fallback; null clears it. These are fallback preferences, not a forced model for every task.
+Before a fallback decision, read only `native_fallbacks` from `$JEV_ROUTER_HOME/config.json` when that directory override is set, otherwise `~/.config/jev-router/config.json`. Do not display the full configuration or read credential files. The dashboard saves independent entries: `{"native_fallbacks":{"codex":{"effort":"medium"},"claude":{"effort":null},"grok":{"effort":null}}}`. An effort string sets that provider's level; null clears it. `jev_effort.py` already reads this file, so the fallback is applied for you; read it directly only to explain a decision.
 
-Consult only the entry keyed by the actual `origin_provider`. Before dispatch validate the configured model against the live host catalog and same-provider rule. Ignore legacy `fallback_provider`, `fallback_model` and `fallback_effort`. Do not automatically import them. Missing/unreadable configuration, an unset default, a stale/foreign model, or an unavailable native tool means direct parent fallback, with the reason disclosed. Never use another provider's entry. Do not substitute another model for the configured default silently. Dashboard cache membership is not evidence of live native availability.
-
-Fallback defaults do not force a reasoning level: omit effort to use the host default. Hosts with no effort parameter omit it and record that it was unsupported, not a made-up value. If the requested comparison depends on explicit effort, lack of that control makes the comparison inconclusive.
+Consult only the entry keyed by the actual `origin_provider`. Valid levels are the `efforts` list in the same config. Ignore legacy `fallback_provider`, `fallback_model` and `fallback_effort`, and never import them. An unset level, an unreadable configuration or an unavailable native tool means direct parent fallback with the reason disclosed. Never use another provider's entry, and never substitute a model for a missing effort.
 
 ## Execute and verify
 
@@ -59,17 +72,55 @@ Fallback defaults do not force a reasoning level: omit effort to use the host de
 
 Native tool responses and host telemetry are primary evidence. For substantive routing, save a compact local record under `~/.config/jev-router/runs/<unique-id>/run.json` when filesystem access is available; otherwise use the conversation tool trace and disclose that no file was written. Records may contain private prompts and paths; do not publish or commit them.
 
-Record `mode: "native"`, `execution_backend: "native_subagent"`, `origin_provider`, original `user_prompt`, known parent identity, task prompts/dependencies, selected provider/model/effort and reason, native tool/agent ID, actual outcome and parent verification. Preserve submitted prompts or hashes when available. Distinguish requested model from host-observed model; missing model, usage and timing remain null/unknown. Never fabricate CLI exit codes, classifier probabilities or native token counts.
+Write the record as UTF-8 (a Python `open(..., encoding="utf-8")` write, or `Out-File -Encoding utf8`; never PowerShell `>` or `Set-Content` without `-Encoding utf8`, which mangles non-ASCII prompts) and use exactly these field names, because the bundled dashboard reads only these. Do not rename, nest differently or invent alternatives (`workers`, `parent_identity`, `recorded_at` are not read). Copy this shape and fill it:
 
-Summarize provider, requested/observed model as known, effort, work performed, result and parent verification in the final response. Include usage only if measured. Direct fallback must say no child ran; direct small work needs no routing record. Same-provider delegation alone proves neither token nor monetary savings.
+```json
+{
+  "run_id": "<same as the directory name>",
+  "mode": "native",
+  "execution_backend": "native_subagent",
+  "status": "completed | failed | partial",
+  "started_at": "<ISO-8601 with offset>",
+  "elapsed_seconds": 0,
+  "origin_provider": "codex | claude | grok",
+  "parent_agent": "<known parent identity, else \"\">",
+  "user_prompt": "<original instruction, verbatim>",
+  "tasks": [
+    {
+      "id": "<task id>",
+      "title": "<bounded deliverable>",
+      "provider": "<provider of the child>",
+      "prompt": "<prompt given to the child>",
+      "depends_on": [],
+      "route": {"<< paste the route object from jev_effort.py --json >>": null},
+      "execution": {
+        "status": "completed | failed",
+        "requested_model": "<the parent's inherited model, not a chosen one>",
+        "requested_effort": "<effort, or \"\" if unsupported>",
+        "actual_model": "<host-observed model, or null if unknown>",
+        "provider": "<provider actually used>",
+        "session_ids": ["<native agent ID>"],
+        "model_evidence_source": "<native tool name, e.g. collaboration.spawn_agent>",
+        "elapsed_seconds": 0,
+        "usage": {},
+        "result": "<actual outcome and parent verification>"
+      }
+    }
+  ]
+}
+```
+
+Preserve submitted prompts (`execution.submitted_prompt`) or hashes (`execution.submitted_prompt_sha256`) when available. Distinguish `requested_model` from host-observed `actual_model`; missing model, usage and timing stay null/absent rather than guessed. Copy `route`, `router_calls` and `router_usage` from `jev_effort.py --json` unchanged; they carry Jev's real probabilities, confidence, latency and token usage. When Jev did not answer in time the fragment says so through `route.fallback` and `route.fallback_reason`, and there are no probabilities to report. `requested_model` records the model that was inherited, never a routing choice. Never fabricate CLI exit codes, classifier probabilities or native token counts.
+
+Summarize provider, the inherited model, the routed effort and who chose it, work performed, result and parent verification in the final response. Include usage only if measured. Direct fallback must say no child ran; direct small work needs no routing record. Same-provider delegation alone proves neither token nor monetary savings, and a lowered effort is not a measured saving.
 
 ## Explicit benchmarks
 
-Benchmark only on request. Use native execution for both arms within the same origin provider: routed model/effort versus a stated fixed baseline. Hold input, scope, acceptance criteria and relevant environment constant. Implementation comparisons need equivalent isolated workspaces; neither arm may consume the other's output or overwrite its files. A spec-analysis benchmark is not an app-implementation benchmark.
+Benchmark only on request. Use native execution for both arms within the same origin provider, on the same model: routed effort versus a stated fixed effort baseline. A benchmark that varies the model is not this skill's comparison and its cache behaviour makes it unsound. Hold input, scope, acceptance criteria and relevant environment constant. Implementation comparisons need equivalent isolated workspaces; neither arm may consume the other's output or overwrite its files. A spec-analysis benchmark is not an app-implementation benchmark.
 
-Record quality before calculating savings. Include routing/dispatch, retries, integration and verification overhead where measurable, and disclose missing parent costs. Separate token counts and wall-clock time, and critical-path duration from summed parallel durations. Missing telemetry makes that savings metric unmeasurable. Disclose sample count, model/effort differences, cache effects and order. Currency savings require billable rates/cache semantics. Historical cross-provider CLI benchmarks describe only the legacy backend.
+Record quality before calculating savings. Include routing/dispatch, retries, integration and verification overhead where measurable, and disclose missing parent costs. Separate token counts and wall-clock time, and critical-path duration from summed parallel durations. Missing telemetry makes that savings metric unmeasurable. Disclose sample count, effort differences, cache effects and order. Currency savings require billable rates/cache semantics. Historical cross-provider CLI benchmarks describe only the legacy backend.
 
-If either native arm cannot launch, provider/model membership cannot be verified, the intended model/effort distinction is unavailable, or equivalent isolated workspaces cannot be established, mark the benchmark inconclusive. Do not replace an arm with direct parent work, a configured fallback, inheritance that erases the comparison, or a different provider/model and call it the requested benchmark.
+If either native arm cannot launch, provider membership cannot be verified, the intended effort distinction is unavailable, or equivalent isolated workspaces cannot be established, mark the benchmark inconclusive. Do not replace an arm with direct parent work, a configured fallback, a host that ignores the effort parameter, or a different provider and call it the requested benchmark.
 
 ## Legacy records
 
