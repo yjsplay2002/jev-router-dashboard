@@ -167,5 +167,34 @@ class HookTests(unittest.TestCase):
             os.environ.pop("JEV_ROUTER_CHILD")
         self.assertEqual((code, out), (0, ""))
 
+    def enable_auto_apply(self):
+        (self.home / "config.json").write_text(json.dumps({**CONFIG, "auto_apply_effort": True}), encoding="utf-8")
+        claude = self.home / "settings.json"
+        claude.write_text(json.dumps({"effortLevel": "low", "theme": "dark"}), encoding="utf-8")
+        codex = self.home / "config.toml"
+        codex.write_bytes(b'model = "gpt"\nmodel_reasoning_effort = "low"\n\n[profiles.x]\nmodel_reasoning_effort = "low"\n')
+        self.hook.SETTINGS = {"claude": claude, "codex": codex}
+        return claude, codex
+
+    def test_auto_apply_writes_the_routed_level_into_host_settings(self):
+        claude, codex = self.enable_auto_apply()
+        sys.argv = ["hook", "claude"]
+        _, out, _ = self.invoke({"prompt": "trace why the migration drops rows"}, choice="high")
+        self.assertEqual(json.loads(claude.read_text(encoding="utf-8")), {"effortLevel": "high", "theme": "dark"})
+        self.assertIn("written to settings.json", json.loads(out)["systemMessage"])
+        sys.argv = ["hook", "codex"]
+        self.invoke({"prompt": "trace why the migration drops rows"}, choice="medium")
+        # only the top-level key changes, and LF line endings survive on Windows
+        self.assertEqual(codex.read_bytes(),
+                         b'model = "gpt"\nmodel_reasoning_effort = "medium"\n\n[profiles.x]\nmodel_reasoning_effort = "low"\n')
+
+    def test_auto_apply_leaves_settings_alone_when_jev_did_not_answer(self):
+        claude, _ = self.enable_auto_apply()
+        sys.argv = ["hook", "claude"]
+        (self.home / ".env").write_text("", encoding="utf-8")
+        _, out, _ = self.invoke({"prompt": "trace why the migration drops rows"})
+        self.assertEqual(json.loads(claude.read_text(encoding="utf-8"))["effortLevel"], "low")
+        self.assertIn("apply: /effort", json.loads(out)["systemMessage"])
+
 if __name__ == "__main__":
     unittest.main()

@@ -34,7 +34,19 @@ python scripts/jev_effort.py "add a retry guard to the order submit path" --prov
 jev: effort=medium (jev-1.13.0, 0.58s, conf 95%) - model unchanged
 ```
 
-**훅은 호스트의 effort 설정을 바꾸지 않습니다.** 훅에서 effort 값을 받는 호스트가 없습니다. 작업 깊이 지시는 모든 호스트에서 통하지만, 실제 effort 수치는 출력된 명령을 사용자가 직접 실행해야 바뀝니다: Claude·Grok은 `/effort <level>`, Codex는 `Alt+.` / `Alt+,` 또는 `/model`. Codex에는 스킬 단위 effort 지정 기능이 없고(openai/codex#22908), Claude의 `effort:` frontmatter는 실제로 적용되지 않는다고 보고되어 있습니다(anthropics/claude-code#69267).
+**기본적으로 훅은 호스트의 effort 설정을 바꾸지 않습니다.** 훅에서 effort 값을 받는 호스트가 없습니다. 작업 깊이 지시는 모든 호스트에서 통하지만, 실제 effort 수치는 출력된 명령을 사용자가 직접 실행해야 바뀝니다: Claude·Grok은 `/effort <level>`, Codex는 `Alt+.` / `Alt+,` 또는 `/model`. Codex에는 스킬 단위 effort 지정 기능이 없고(openai/codex#22908), Claude의 `effort:` frontmatter는 실제로 적용되지 않는다고 보고되어 있습니다(anthropics/claude-code#69267).
+
+### 자동 적용(선택)
+
+`~/.config/jev-router/config.json`에 `"auto_apply_effort": true`를 넣으면, Jev가 답했을 때 훅이 명령을 출력하는 대신 라우팅된 값을 호스트 설정 파일에 직접 씁니다.
+
+| 호스트 | 쓰는 위치 | 적용 시점 |
+| --- | --- | --- |
+| Claude | `settings.json`의 `effortLevel`(`$CLAUDE_CONFIG_DIR` 반영) | Claude Code가 설정을 다시 읽을 때. 이미 진행 중인 턴에는 적용되지 않음 |
+| Codex | `config.toml` 최상위 `model_reasoning_effort`(`$CODEX_HOME` 반영) | 다음 Codex 세션 |
+| Grok | 없음(파일 설정이 없음). 명령은 계속 출력 | — |
+
+주의: effort가 최소 한 턴 늦게 따라옵니다. 전역 설정이라 동시에 열린 다른 세션에도 적용됩니다. Claude의 모델별 `modelSettings.<model>.effortLevel`이 있으면 그 값이 우선합니다. fallback(API 키 없음, 시간 초과)일 때는 파일을 건드리지 않습니다. 쓰기는 원자적으로 하며 값이 이미 같으면 쓰지 않습니다.
 
 다음 경우 훅은 설정해 둔 effort를 그대로 쓰며, 턴을 막지 않습니다.
 
@@ -77,7 +89,7 @@ jev: effort=medium (jev-1.13.0, 0.58s, conf 95%) - model unchanged
 
    기존 `UserPromptSubmit` 훅이 있으면 덮어쓰지 말고 옆에 추가하세요.
 
-설정 파일은 `~/.config/jev-router/config.json`이며 `$JEV_ROUTER_HOME`으로 디렉터리를 바꿀 수 있습니다. 사용하는 키는 `efforts`, `judge_context_chars`, `native_fallbacks`입니다.
+설정 파일은 `~/.config/jev-router/config.json`이며 `$JEV_ROUTER_HOME`으로 디렉터리를 바꿀 수 있습니다. 사용하는 키는 `efforts`, `judge_context_chars`, `native_fallbacks`, `auto_apply_effort`입니다.
 
 ## 대시보드
 

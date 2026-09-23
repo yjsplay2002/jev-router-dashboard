@@ -34,7 +34,19 @@ python scripts/jev_effort.py "add a retry guard to the order submit path" --prov
 jev: effort=medium (jev-1.13.0, 0.58s, conf 95%) - model unchanged
 ```
 
-**The hook does not change the host's effort setting.** No host accepts an effort level from a hook. The behavioural instruction works on every host; the numeric level only changes if you run the printed command yourself: Claude and Grok `/effort <level>`, Codex `Alt+.` / `Alt+,` or `/model`. Codex has no skill-scoped effort override (openai/codex#22908) and Claude's `effort:` frontmatter is reported as inert (anthropics/claude-code#69267).
+**By default the hook does not change the host's effort setting.** No host accepts an effort level from a hook. The behavioural instruction works on every host; the numeric level only changes if you run the printed command yourself: Claude and Grok `/effort <level>`, Codex `Alt+.` / `Alt+,` or `/model`. Codex has no skill-scoped effort override (openai/codex#22908) and Claude's `effort:` frontmatter is reported as inert (anthropics/claude-code#69267).
+
+### Auto-apply (opt-in)
+
+Set `"auto_apply_effort": true` in `~/.config/jev-router/config.json` and, when Jev answers, the hook writes the routed level into the host's own settings instead of printing a command:
+
+| Host | Written to | Takes effect |
+| --- | --- | --- |
+| Claude | `effortLevel` in `settings.json` (`$CLAUDE_CONFIG_DIR` respected) | When Claude Code rereads settings; not the turn already running |
+| Codex | top-level `model_reasoning_effort` in `config.toml` (`$CODEX_HOME` respected) | Next Codex session |
+| Grok | nothing (no file setting); the command is still printed | — |
+
+Caveats: the effort lags at least one turn; the setting is global, so other open sessions pick it up too; a per-model `modelSettings.<model>.effortLevel` in Claude overrides the top-level value; and a fallback (no API key, timeout) leaves the file untouched. The write is atomic and skipped when the value is already set.
 
 The hook falls back to your configured effort, and never blocks the turn, when:
 
@@ -77,7 +89,7 @@ If that is not acceptable for a project, leave `TYPESAFE_API_KEY` unset or remov
 
    Add it next to any existing `UserPromptSubmit` hooks rather than replacing them.
 
-Configuration lives in `~/.config/jev-router/config.json` (`$JEV_ROUTER_HOME` overrides the directory). The keys used are `efforts`, `judge_context_chars` and `native_fallbacks`.
+Configuration lives in `~/.config/jev-router/config.json` (`$JEV_ROUTER_HOME` overrides the directory). The keys used are `efforts`, `judge_context_chars`, `native_fallbacks` and `auto_apply_effort`.
 
 ## Dashboard
 

@@ -8,7 +8,10 @@ wall-clock cap, shows the decision, and tells the model to work at that depth.
 
 No host lets a hook set the effort parameter itself, so the apply step is the
 host's own command and the hook prints it ready to use. The behavioural half
-(`additionalContext`) is what works on all three hosts today.
+(`additionalContext`) is what works on all three hosts today. With
+`"auto_apply_effort": true` in config.json the hook instead writes a routed level
+into the host's own settings file (Claude `effortLevel`, Codex
+`model_reasoning_effort`), which the host reads on a later turn or session.
 
 The hook never blocks a turn: any failure exits 0 with no output.
 """
@@ -16,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -29,6 +33,11 @@ APPLY_HINT = {
     "claude": "/effort {effort}",
     "grok": "/effort {effort}",
     "codex": "Alt+. / Alt+, (or /model)",
+}
+# Where each host keeps its default effort. Grok has no file-based setting.
+SETTINGS = {
+    "claude": Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json",
+    "codex": Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "config.toml",
 }
 DEPTH = {
     "low": "Answer directly. Do not explore alternatives or restate the problem.",
@@ -79,6 +88,41 @@ def write_record(result: dict[str, object], prompt: str, provider: str, session:
     (directory / "run.json").write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def replace_atomically(path: Path, text: str) -> None:
+    temp = path.with_name(f".{path.name}.jev-{os.getpid()}.tmp")
+    temp.write_text(text, encoding="utf-8", newline="")  # keep the file's own line endings
+    os.replace(temp, path)
+
+
+def apply_effort(provider: str, effort: str) -> bool:
+    """Write the routed level into the host's settings file; True only if the file now holds it."""
+    path = SETTINGS.get(provider)
+    if path is None or not path.is_file():
+        return False
+    with path.open(encoding="utf-8", newline="") as handle:
+        text = handle.read()
+    eol = "\r\n" if "\r\n" in text else "\n"
+    if provider == "claude":
+        settings = json.loads(text)
+        if not isinstance(settings, dict):
+            return False
+        if settings.get("effortLevel") != effort:
+            settings["effortLevel"] = effort
+            replace_atomically(path, json.dumps(settings, ensure_ascii=False, indent=2).replace("\n", eol) + eol)
+        return True
+    # Codex: only the top-level key, which sits before the first [table] header.
+    table = re.search(r"^\[", text, re.M)
+    cut = table.start() if table else len(text)
+    head, tail = text[:cut], text[cut:]
+    line = f'model_reasoning_effort = "{effort}"'
+    key = re.compile(r"^model_reasoning_effort[ \t]*=[^\r\n]*", re.M)
+    head = key.sub(line, head, count=1) if key.search(head) else f"{line}{eol}{head}"
+    new_text = head + tail
+    if new_text != text:
+        replace_atomically(path, new_text)
+    return True
+
+
 def main() -> int:
     if os.environ.get("JEV_ROUTER_CHILD") == "1":
         return 0
@@ -102,6 +146,13 @@ def main() -> int:
 
     hint = APPLY_HINT.get(provider, "/effort {effort}").format(effort=result["effort"])
     message = f"{jev_effort.announce(result)} -> apply: {hint}"
+    if config.get("auto_apply_effort") is True and result["routed"]:
+        try:
+            if apply_effort(provider, str(result["effort"])):
+                message = (f"{jev_effort.announce(result)} -> written to {SETTINGS[provider].name}; "
+                           "takes effect when the host rereads it")
+        except (OSError, ValueError):
+            pass  # an unreadable settings file keeps the printed command
     context = (f"Routed effort for this turn: {result['effort']} "
                f"({'jev' if result['routed'] else 'your configured default'}). "
                f"{DEPTH.get(str(result['effort']), '')} "
