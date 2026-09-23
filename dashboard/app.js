@@ -10,6 +10,9 @@ const fmt = (n) => new Intl.NumberFormat().format(Number(n || 0));
 const ratio = (n) => { const value = Number(n ?? 0); return Number.isFinite(value) ? Math.max(0, Math.min(1, value > 1 ? value / 100 : value)) : 0; };
 const pct = (n) => `${Math.round(ratio(n) * 100)}%`;
 const secs = (n) => `${Number(n || 0).toFixed(2)}s`;
+// Jev calls cost fractions of a cent, so show significant digits rather than cents.
+const usd = (n) => { const v = Number(n || 0); return v === 0 ? "$0" : v >= 0.01 ? `$${v.toFixed(2)}` : `$${v.toPrecision(2)}`; };
+const cost = (run) => Number(run.router_cost_usd || 0);
 const SVG = "http://www.w3.org/2000/svg";
 const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)");
 
@@ -124,6 +127,7 @@ function drawPlate() {
   const facts = [
     ["Host", run.origin_provider || "—"], ["Session", sessionOf(run) || "—"],
     ["When", ago(run.started_at)], ["Jev", info.kind === "fallback" ? "no answer" : `${secs(task.elapsed_seconds)} · ${pct(task.confidence)}`],
+    ["Jev cost", usd(cost(run))],
   ];
   $("readoutFacts").innerHTML = facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${escapeHtml(v)}</dd></div>`).join("");
   $("readoutPrompt").textContent = run.user_prompt || "";
@@ -163,6 +167,8 @@ function evidenceFlowHtml(run) {
     ["Chosen by", task.effort_source === "jev" ? "Jev" : "your default gear"],
     ["Jev latency", info.kind === "fallback" ? "—" : secs(task.elapsed_seconds)],
     ["Confidence", info.kind === "fallback" ? "—" : pct(task.confidence)],
+    ["Jev tokens", `${fmt(run.router_usage?.input_tokens)} in · ${fmt(run.router_usage?.output_tokens)} out`],
+    ["Jev cost", usd(cost(run))],
     ["Proxied requests", fmt(proxy.requests)], ["Shifted by proxy", fmt(proxy.changed)],
     ["Model", "inherited, never routed"],
   ];
@@ -178,7 +184,7 @@ function rowSummary(run) {
   const task = info.task;
   const t = clock(run.started_at);
   const host = isTurn(run) ? run.origin_provider : task.execution_provider || task.provider || run.origin_provider;
-  const jev = info.kind === "fallback" || info.kind === "delegated" ? "—" : `${secs(task.elapsed_seconds)}<br>${pct(task.confidence)}`;
+  const jev = info.kind === "fallback" || info.kind === "delegated" ? (cost(run) ? usd(cost(run)) : "—") : `${secs(task.elapsed_seconds)} · ${pct(task.confidence)}<br>${usd(cost(run))}`;
   const prompt = run.user_prompt || task.title || run.run_id;
   return `<span class="t-time"><b>${t.time}</b>${t.day}</span>${tiles(info)}
     <span class="state" data-state="${info.kind}"><span>${escapeHtml(info.label)}<br><small>${escapeHtml(info.note)}</small></span></span>
@@ -272,6 +278,12 @@ function updateTally() {
   $("tally").innerHTML = turns.length
     ? `${fmt(turns.length)} turns · <b>${fmt(count("engaged"))} engaged</b> · ${fmt(count("selected"))} selected, not engaged · ${fmt(count("fallback"))} fallback`
     : "No turns yet.";
+  const calls = state.runs.filter(run => cost(run) > 0);
+  const spent = calls.reduce((sum, run) => sum + cost(run), 0);
+  const tokens = state.runs.reduce((sum, run) => sum + Number(run.router_usage?.input_tokens || 0), 0);
+  $("spend").innerHTML = calls.length
+    ? `Jev spend <b>${usd(spent)}</b> for ${fmt(calls.length)} calls · ${fmt(tokens)} input tokens · ${usd(spent / calls.length)} per call`
+    : "Jev spend $0 — no recorded Jev call yet.";
   const gears = state.efforts.map(e => turns.filter(s => s.kind !== "fallback" && s.gear === e).length);
   const total = gears.reduce((a, b) => a + b, 0);
   let x = 0;
@@ -300,6 +312,8 @@ async function loadRuns(signal) {
 async function loadHealth(signal) {
   const health = await fetchJson("/api/health", { signal });
   $("subtitle").textContent = health.runs_dir;
+  const price = health.router_price_per_mtok;
+  if (price) $("spend").title = `List price: $${price.input}/M input tokens, $${price.output}/M output tokens. Cost is computed from the tokens each run recorded.`;
   const up = health.proxy?.listening;
   $("linkage").dataset.state = up ? "up" : "down";
   $("linkageText").textContent = up ? `Effort proxy :${health.proxy.port} engaged` : `Effort proxy :${health.proxy?.port ?? 8791} down — gears are selected, not engaged`;

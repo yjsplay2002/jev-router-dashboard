@@ -24,6 +24,9 @@ from urllib.parse import parse_qs, unquote, urlparse
 VERSION = "0.5.0"
 PROXY_PORT = int(os.environ.get("JEV_EFFORT_PROXY_PORT") or 8791)
 TURN_SESSION_RE = re.compile(r"-effort-([0-9a-f]{8})$")
+# ponytail: list price of jev-latest (USD per million tokens, checked 2026-09-23); Jev returns tokens, not cost.
+# Move to config.json if TypeSafe changes it or bills differently per account.
+JEV_PRICE_PER_MTOK = {"input": 0.042, "output": 0.0}
 HERE = Path(__file__).resolve().parent.parent
 STATIC_ROOT = HERE / "dashboard"
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,160}$")
@@ -163,6 +166,12 @@ def normalize_task(task: object, include_content: bool = False, run_dir: Path | 
     return normalized
 
 
+def router_cost(usage: dict[str, int]) -> float:
+    """What the recorded Jev call cost at list price; 0 when no call was made (no key, or the cap hit first)."""
+    return (usage.get("input_tokens", 0) * JEV_PRICE_PER_MTOK["input"]
+            + usage.get("output_tokens", 0) * JEV_PRICE_PER_MTOK["output"]) / 1_000_000
+
+
 def normalize_run(raw: object, path: Path, include_content: bool = False) -> dict[str, object]:
     if not isinstance(raw, dict):
         raise ValueError("run.json root must be an object")
@@ -190,7 +199,8 @@ def normalize_run(raw: object, path: Path, include_content: bool = False) -> dic
         "origin_provider": scrub(raw.get("origin_provider"), 80),
         "parent_agent": scrub(raw.get("parent_agent") or raw.get("parent_identity"), 200),
         "confidence_threshold": normalize_probability(raw.get("confidence_threshold")) if raw.get("confidence_threshold") is not None else None,
-        "router_usage": normalize_usage(raw.get("router_usage")),
+        "router_usage": (router_usage := normalize_usage(raw.get("router_usage"))),
+        "router_cost_usd": router_cost(router_usage),
         "task_count": len(tasks),
         "tasks": [normalize_task(task, include_content, path.parent) for task in tasks],
         "has_report": has_report,
@@ -500,7 +510,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         path = unquote(parsed.path)
         if path == "/api/health":
             self._json({"version": VERSION, "runs_dir": str(self.server.store.root), "run_count": len(self.server.store._paths()),
-                        "proxy": {"port": PROXY_PORT, "listening": proxy_listening()}})
+                        "proxy": {"port": PROXY_PORT, "listening": proxy_listening()},
+                        "router_price_per_mtok": JEV_PRICE_PER_MTOK})
             return
         if path == "/api/config":
             try:

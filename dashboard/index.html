@@ -61,6 +61,7 @@
       <div class="log-head">
         <h2 id="logTitle">Shift log</h2>
         <p class="tally" id="tally"></p>
+        <p class="spend" id="spend"></p>
         <svg class="spread" id="spread" viewBox="0 0 300 8" preserveAspectRatio="none" aria-hidden="true"></svg>
       </div>
       <div class="toolbar">
@@ -69,7 +70,7 @@
         <select id="status" aria-label="Filter by engagement"><option value="">Every turn</option><option value="engaged">Engaged</option><option value="selected">Selected, not engaged</option><option value="fallback">Fallback</option><option value="delegated">Delegated runs</option></select>
         <button id="refresh" class="btn" type="button">Refresh</button>
       </div>
-      <div class="log-cols" aria-hidden="true"><span>Time</span><span>Gear</span><span>Engagement</span><span>Host</span><span>Jev</span><span>Prompt</span></div>
+      <div class="log-cols" aria-hidden="true"><span>Time</span><span>Gear</span><span>Engagement</span><span>Host</span><span>Jev · cost</span><span>Prompt</span></div>
       <p id="error" class="error" role="alert" hidden></p>
       <div id="runs" class="runs"></div>
       <p id="announce" class="sr-only" aria-live="polite"></p>

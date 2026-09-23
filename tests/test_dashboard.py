@@ -345,6 +345,15 @@ class DashboardTests(unittest.TestCase):
         self.assertNotIn("proxy", out["delegated-run"])
         self.assertNotIn("proxy", turns[0])  # cached records are never mutated
 
+    def test_router_cost_is_list_price_times_recorded_tokens(self):
+        self.assertAlmostEqual(dashboard.router_cost({"input_tokens": 1_000_000, "output_tokens": 500}),
+                               dashboard.JEV_PRICE_PER_MTOK["input"] + 500 * dashboard.JEV_PRICE_PER_MTOK["output"] / 1_000_000)
+        self.assertEqual(dashboard.router_cost({}), 0)
+        self.run["router_usage"] = {"input_tokens": 412, "output_tokens": 39}
+        (self.root / self.run["run_id"] / "run.json").write_text(json.dumps(self.run), encoding="utf-8")
+        item = dashboard.RunStore(self.root).list()[0]
+        self.assertAlmostEqual(item["router_cost_usd"], 412 * dashboard.JEV_PRICE_PER_MTOK["input"] / 1_000_000)
+
     def test_applied_log_skips_malformed_lines(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "applied.log"

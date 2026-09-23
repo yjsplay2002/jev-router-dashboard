@@ -105,6 +105,7 @@ The dashboard is drawn as a gearbox shift gate: every prompt is a gear change, t
 
 - **Gate plate:** an H-pattern gate built from your `efforts` list with the knob in the gear the last prompt ran in, the engagement state, host, session, Jev latency and confidence, the prompt excerpt and Jev's probabilities.
 - **Top bar lamp:** whether the effort proxy on `:8791` is listening.
+- **Jev spend:** total cost of the recorded Jev calls, call count, input tokens and average per call above the log; each row and the gate plate show that turn's cost. Jev returns token counts, not cost, so the dashboard multiplies the recorded tokens by the list price (`JEV_PRICE_PER_MTOK` in `scripts/jev_dashboard.py`: $0.042 per million input tokens, output free, checked 2026-09-23). A fallback turn with no Jev call costs $0.
 - **Default gear:** the per-provider fallback effort, editable in place.
 - **Shift log:** one row per turn, expandable to the prompt and the evidence. Older delegated runs keep their `prompt → tasks → effort` evidence flow.
 
