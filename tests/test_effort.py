@@ -240,6 +240,11 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(json.loads(self.proxy.rewrite(codex, "low", "reasoning"))["reasoning"],
                          {"effort": "low", "context": "all_turns"})
 
+    def test_a_stream_is_framed_so_the_client_knows_where_the_body_ends(self):
+        block = b"data: hi\n\n"
+        self.assertEqual(self.proxy.chunk_block(block), b"A\r\n" + block + b"\r\n")
+        self.assertEqual(self.proxy.CHUNK_END, b"0\r\n\r\n")
+
     def test_codex_is_detected_only_when_config_selects_the_jev_provider(self):
         spec = importlib.util.spec_from_file_location("jev_effort_hook", ROOT / "scripts" / "jev_effort_hook.py")
         hook = importlib.util.module_from_spec(spec)

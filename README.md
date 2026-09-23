@@ -11,7 +11,8 @@ A skill for Claude Code, Codex and Grok that picks the reasoning effort for each
 
 | Path | Role |
 | --- | --- |
-| `scripts/jev_effort_hook.py` | `UserPromptSubmit` hook. Asks Jev for this turn's effort before the turn starts and tells the model how deeply to work. |
+| `scripts/jev_effort_hook.py` | `UserPromptSubmit` hook. Asks Jev for this turn's effort before the turn starts, tells the model how deeply to work, and hands the level to the proxy. |
+| `scripts/jev_effort_proxy.py` | Loopback proxy. Writes that level onto the same prompt's API request. |
 | `scripts/jev_effort.py` | The single Jev call (1.0 s cap). The hook uses it, and you can run it by hand. |
 | `SKILL.md` | Instructions the agent follows: honour the routed effort, delegate only on request, record evidence. |
 | `scripts/jev_dashboard.py`, `dashboard/` | Local dashboard for run records and per-provider fallback effort. |
@@ -34,19 +35,15 @@ python scripts/jev_effort.py "add a retry guard to the order submit path" --prov
 jev: effort=medium (jev-1.13.0, 0.58s, conf 95%) - model unchanged
 ```
 
-**By default the hook does not change the host's effort setting.** No host accepts an effort level from a hook. The behavioural instruction works on every host; the numeric level only changes if you run the printed command yourself: Claude and Grok `/effort <level>`, Codex `Alt+.` / `Alt+,` or `/model`. Codex has no skill-scoped effort override (openai/codex#22908) and Claude's `effort:` frontmatter is reported as inert (anthropics/claude-code#69267).
+**Claude and Codex apply the numeric level to the same prompt.** No host accepts an effort parameter from a hook, so the hook writes `<router home>/effort/<session id>` and `jev_effort_proxy.py` sets the effort field on that session's requests before they leave the machine. The model field is not touched. Grok still prints `/effort <level>`; the numeric level changes there only if you run it.
 
-### Auto-apply (opt-in)
-
-Set `"auto_apply_effort": true` in `~/.config/jev-router/config.json` and, when Jev answers, the hook writes the routed level into the host's own settings instead of printing a command:
-
-| Host | Written to | Takes effect |
+| Host | How the request is steered | What the proxy sets |
 | --- | --- | --- |
-| Claude | `effortLevel` in `settings.json` (`$CLAUDE_CONFIG_DIR` respected) | When Claude Code rereads settings; not the turn already running |
-| Codex | top-level `model_reasoning_effort` in `config.toml` (`$CODEX_HOME` respected) | Next Codex session |
-| Grok | nothing (no file setting); the command is still printed | — |
+| Claude | `ANTHROPIC_BASE_URL=http://127.0.0.1:8791` in `settings.json`. A SessionStart hook starts the proxy. | `output_config.effort`, only if the CLI already sent one |
+| Codex | `model_provider = "jev"` with `base_url = "http://127.0.0.1:8791/codex"` | `reasoning.effort`, only if the CLI already sent one |
+| Grok | no rewrite path | the hook prints `/effort <level>` |
 
-Caveats: the effort lags at least one turn; the setting is global, so other open sessions pick it up too; a per-model `modelSettings.<model>.effortLevel` in Claude overrides the top-level value; and a fallback (no API key, timeout) leaves the file untouched. The write is atomic and skipped when the value is already set.
+The proxy rewrites a request only when the routed level is in the configured `efforts` list. If Jev does not answer, the hook deletes the session file and the CLI's own effort passes through. A visible line ending in `applied to this prompt` means this prompt's requests carried the routed level. Codex has no skill-scoped effort override (openai/codex#22908) and Claude's `effort:` frontmatter is reported as inert (anthropics/claude-code#69267); neither is required for this path. Prompt cache, measured 2026-09-23: on Claude, switching the effort between turns of one session kept reading the whole prefix from cache (only the new turn was written). On Codex the first turn in an effort level the session had not used recently read nothing from cache, while returning to a level used earlier hit it, so the cache appears to be kept per effort level there; frequent gear changes on Codex cost cache misses.
 
 The hook falls back to your configured effort, and never blocks the turn, when:
 
@@ -89,7 +86,9 @@ If that is not acceptable for a project, leave `TYPESAFE_API_KEY` unset or remov
 
    Add it next to any existing `UserPromptSubmit` hooks rather than replacing them.
 
-Configuration lives in `~/.config/jev-router/config.json` (`$JEV_ROUTER_HOME` overrides the directory). The keys used are `efforts`, `judge_context_chars`, `native_fallbacks` and `auto_apply_effort`.
+   On Windows, Codex runs that command through the user shell, and a quoted `python.exe` path under `Program Files` does not start. Point the Codex hook at `scripts/jev-effort.cmd` with a path that contains no spaces (`jev-effort.cmd codex`, and `jev-effort.cmd codex --session-start` so the proxy is up before the first request). Changing the command makes Codex skip it until you trust the new one in `/hooks`.
+
+Configuration lives in `~/.config/jev-router/config.json` (`$JEV_ROUTER_HOME` overrides the directory). The keys used are `efforts`, `judge_context_chars` and `native_fallbacks`. The proxy listens on `127.0.0.1:8791` (`$JEV_EFFORT_PROXY_PORT` overrides the port; the hook and the base URLs must use the same port).
 
 ## Dashboard
 
@@ -97,18 +96,26 @@ Configuration lives in `~/.config/jev-router/config.json` (`$JEV_ROUTER_HOME` ov
 python scripts/jev_dashboard.py --open   # http://127.0.0.1:8787
 ```
 
-It shows, for each run:
+The dashboard is drawn as a gearbox shift gate: every prompt is a gear change, the hook *selects* the gear and the proxy *engages* it.
 
-- difficulty and category, the chosen effort, its confidence and probability distribution, and whether Jev or your setting chose it;
-- a `prompt → task/dependencies → effort decision` evidence diagram;
-- fallback decisions and reasons, the inherited model, status, duration, token usage and a redacted result summary;
-- live updates as new records appear.
+- **Gate plate:** an H-pattern gate built from your `efforts` list with the knob in the gear the last prompt ran in, the engagement state, host, session, Jev latency and confidence, the prompt excerpt and Jev's probabilities.
+- **Top bar lamp:** whether the effort proxy on `:8791` is listening.
+- **Default gear:** the per-provider fallback effort, editable in place.
+- **Shift log:** one row per turn, expandable to the prompt and the evidence. Older delegated runs keep their `prompt → tasks → effort` evidence flow.
 
-In a hook record, the effort is the routed (or fallback) level. It does not show whether you actually applied it with `/effort`.
+Each turn is joined to the proxy's request log (`<router home>/effort/applied.log`) by session and time and labelled:
+
+| Label | Meaning |
+| --- | --- |
+| Engaged | The proxy put the routed level on the turn's requests (with how many it actually changed). |
+| Selected, not engaged | Jev chose a level but no request of that turn passed the proxy, so the host's own setting ran. |
+| Fallback | Jev did not answer within the cap; the host's own setting ran. |
+
+Engagement is never inferred without log evidence. On Grok a turn is at most "Selected".
 
 ### Per-provider fallback effort
 
-The first settings panel sets the effort each provider uses when Jev does not answer in time. Each provider is saved separately; **No default — parent handles fallback** clears one. Levels come from the `efforts` list.
+The **Default gear** panel sets the effort each provider uses when Jev does not answer in time. Each provider is saved separately; **Host's own setting** clears one. Levels come from the `efforts` list.
 
 ```json
 {"native_fallbacks":{"codex":{"effort":"medium"},"claude":{"effort":null},"grok":{"effort":null}}}
@@ -132,7 +139,7 @@ Options:
 - Binds only to loopback and refuses public binds.
 - Run history is read-only. The only write is `PUT /api/config` (`native_fallbacks` only), which requires a same-origin JSON request and replaces the file atomically.
 - Scrubs common API keys, bearer tokens, passwords, GitHub tokens and home-directory paths from displayed prompts and summaries.
-- No CDN assets, analytics, fonts or telemetry. Validates run IDs and report paths against directory traversal. Sends restrictive CSP, frame, MIME-sniffing, referrer and cache headers.
+- No CDN assets, remote fonts, analytics or telemetry; the one typeface (Barlow Condensed, SIL OFL) is served from `dashboard/fonts/`. Validates run IDs and report paths against directory traversal. Sends restrictive CSP, frame, MIME-sniffing, referrer and cache headers.
 
 Run records contain full prompts on disk (up to 12,000 characters). Never commit `~/.config/jev-router/runs` or publish screenshots without reviewing them.
 

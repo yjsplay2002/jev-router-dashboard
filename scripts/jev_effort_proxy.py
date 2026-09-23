@@ -73,41 +73,127 @@ def note_applied(session: str, level: str, changed: bool) -> None:
         pass
 
 
+def read_body(handler: BaseHTTPRequestHandler) -> bytes:
+    """Claude and Codex send a length; a chunked body is accepted so it is not forwarded empty."""
+    raw_length = handler.headers.get("Content-Length")
+    if raw_length is not None and raw_length.strip() != "":
+        return handler.rfile.read(int(raw_length))
+    if "chunked" not in handler.headers.get("Transfer-Encoding", "").lower():
+        return b""
+    parts: list[bytes] = []
+    while True:
+        line = handler.rfile.readline()
+        if not line:
+            break
+        size = int(line.split(b";", 1)[0], 16)
+        if size == 0:
+            while True:
+                trailer = handler.rfile.readline()
+                if trailer in (b"\r\n", b"\n", b""):
+                    break
+            break
+        parts.append(handler.rfile.read(size))
+        if handler.rfile.read(2) != b"\r\n":
+            break
+    return b"".join(parts)
+
+
+def chunk_block(data: bytes) -> bytes:
+    return f"{len(data):X}\r\n".encode("ascii") + data + b"\r\n"
+
+
+CHUNK_END = b"0\r\n\r\n"
+
+
 class Handler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.0"  # the response is close-delimited, so streams pass through as they arrive
+    protocol_version = "HTTP/1.1"  # a 1.0 close, or a 1.1 body with no length, is ECONNRESET to Claude Code
 
     def relay(self) -> None:
-        body = self.rfile.read(int(self.headers.get("content-length") or 0))
-        codex = self.path == CODEX_PREFIX or self.path.startswith(CODEX_PREFIX + "/")
-        host, prefix, session_header, field = ROUTES["codex" if codex else "claude"]
-        path = prefix + (self.path[len(CODEX_PREFIX):] if codex else self.path)
-        if self.command == "POST" and (path.startswith("/v1/messages") or path.endswith("/responses")):
-            session = self.headers.get(session_header, "")
-            level = routed_effort(session)
-            new_body = rewrite(body, level, field)
-            if level is not None:
-                note_applied(session, level, changed=new_body is not body)
-            body = new_body
-        # ponytail: one upstream TLS connection per request; pool connections if the handshake shows up in latency
-        upstream = http.client.HTTPSConnection(host, timeout=900)
-        headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP}
-        headers["Host"] = host
-        headers["Content-Length"] = str(len(body))
+        started = False
+        chunked = False
+        finished = False
+        upstream = None
         try:
+            body = read_body(self)
+            codex = self.path == CODEX_PREFIX or self.path.startswith(CODEX_PREFIX + "/")
+            host, prefix, session_header, field = ROUTES["codex" if codex else "claude"]
+            path = prefix + (self.path[len(CODEX_PREFIX):] if codex else self.path)
+            if self.command == "POST" and (path.startswith("/v1/messages") or path.endswith("/responses")):
+                session = self.headers.get(session_header, "")
+                level = routed_effort(session)
+                new_body = rewrite(body, level, field)
+                if level is not None:
+                    note_applied(session, level, changed=new_body is not body)
+                body = new_body
+            # ponytail: one upstream TLS connection per request; pool connections if the handshake shows up in latency
+            upstream = http.client.HTTPSConnection(host, timeout=900)
+            headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP}
+            headers["Host"] = host
+            headers["Content-Length"] = str(len(body))
             upstream.request(self.command, path, body=body, headers=headers)
             response = upstream.getresponse()
-        except OSError as exc:
-            self.send_error(502, f"jev effort proxy: upstream unreachable ({type(exc).__name__})")
-            return
-        self.send_response(response.status, response.reason)
-        for key, value in response.getheaders():
-            if key.lower() not in HOP:
+            length = response.getheader("Content-Length")
+            close = self.request_version != "HTTP/1.1" or "close" in self.headers.get("Connection", "").lower()
+            self.close_connection = close
+            self.send_response(response.status, response.reason)
+            started = True
+            for key, value in response.getheaders():
+                if key.lower() in HOP or key.lower() in ("content-length", "transfer-encoding", "date", "server"):
+                    continue
+                try:
+                    key.encode("latin-1")
+                    value.encode("latin-1")
+                except UnicodeEncodeError:
+                    continue
                 self.send_header(key, value)
-        self.end_headers()
-        while chunk := response.read1(65536):
-            self.wfile.write(chunk)
+            if length is not None and self.command != "HEAD":
+                self.send_header("Content-Length", length)
+            elif self.command != "HEAD":
+                self.send_header("Transfer-Encoding", "chunked")
+                chunked = True
+            self.send_header("Connection", "close" if close else "keep-alive")
+            self.end_headers()
+            if self.command == "HEAD":
+                return
+            if length is not None:
+                remaining = int(length)
+                while remaining:
+                    chunk = response.read1(min(65536, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+                if remaining:
+                    self.close_connection = True
+            else:
+                while chunk := response.read1(65536):
+                    self.wfile.write(chunk_block(chunk))
+                self.wfile.write(CHUNK_END)
+                finished = True
             self.wfile.flush()
-        upstream.close()
+        except Exception:
+            self.close_connection = True
+            if started and chunked and not finished:
+                try:
+                    self.wfile.write(CHUNK_END)
+                    self.wfile.flush()
+                except Exception:
+                    pass
+            if not started:
+                message = b'{"type":"error","error":{"type":"api_error","message":"jev effort proxy upstream failed"}}'
+                try:
+                    self.send_response(502)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(message)))
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    self.wfile.write(message)
+                    self.wfile.flush()
+                except Exception:
+                    pass
+        finally:
+            if upstream is not None:
+                upstream.close()
 
     do_GET = do_POST = do_PUT = do_DELETE = do_PATCH = relay
 

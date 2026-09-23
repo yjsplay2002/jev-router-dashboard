@@ -11,7 +11,8 @@ Claude Code, Codex, Grok에서 턴마다 Jev로 추론 effort를 정해 주는 �
 
 | 경로 | 역할 |
 | --- | --- |
-| `scripts/jev_effort_hook.py` | `UserPromptSubmit` 훅. 턴이 시작되기 전에 Jev에 이번 턴의 effort를 묻고, 모델에게 얼마나 깊게 작업할지 알려 줍니다. |
+| `scripts/jev_effort_hook.py` | `UserPromptSubmit` 훅. 턴이 시작되기 전에 Jev에 이번 턴의 effort를 묻고, 모델에게 작업 깊이를 알린 뒤 그 값을 프록시에 넘깁니다. |
+| `scripts/jev_effort_proxy.py` | 루프백 프록시. 같은 프롬프트의 API 요청에 그 effort를 실어 보냅니다. |
 | `scripts/jev_effort.py` | Jev 호출 한 번(1.0초 제한). 훅이 이것을 쓰며, 직접 실행할 수도 있습니다. |
 | `SKILL.md` | 에이전트가 따르는 지침: 라우팅된 effort 따르기, 요청이 있을 때만 위임, 근거 기록. |
 | `scripts/jev_dashboard.py`, `dashboard/` | 실행 기록과 provider별 fallback effort를 보는 로컬 대시보드. |
@@ -34,19 +35,15 @@ python scripts/jev_effort.py "add a retry guard to the order submit path" --prov
 jev: effort=medium (jev-1.13.0, 0.58s, conf 95%) - model unchanged
 ```
 
-**기본적으로 훅은 호스트의 effort 설정을 바꾸지 않습니다.** 훅에서 effort 값을 받는 호스트가 없습니다. 작업 깊이 지시는 모든 호스트에서 통하지만, 실제 effort 수치는 출력된 명령을 사용자가 직접 실행해야 바뀝니다: Claude·Grok은 `/effort <level>`, Codex는 `Alt+.` / `Alt+,` 또는 `/model`. Codex에는 스킬 단위 effort 지정 기능이 없고(openai/codex#22908), Claude의 `effort:` frontmatter는 실제로 적용되지 않는다고 보고되어 있습니다(anthropics/claude-code#69267).
+**Claude와 Codex는 같은 프롬프트에 수치 effort를 실어 보냅니다.** 훅이 effort 값을 직접 받는 호스트는 없습니다. 그래서 훅이 `<router home>/effort/<session id>`에 값을 쓰고, `jev_effort_proxy.py`가 그 세션의 요청이 머신을 떠나기 전에 effort 필드만 바꿉니다. 모델 필드는 건드리지 않습니다. Grok은 여전히 `/effort <level>`을 출력하며, 그 명령을 실행해야 수치가 바뀝니다.
 
-### 자동 적용(선택)
-
-`~/.config/jev-router/config.json`에 `"auto_apply_effort": true`를 넣으면, Jev가 답했을 때 훅이 명령을 출력하는 대신 라우팅된 값을 호스트 설정 파일에 직접 씁니다.
-
-| 호스트 | 쓰는 위치 | 적용 시점 |
+| 호스트 | 요청이 프록시로 가는 방법 | 프록시가 바꾸는 값 |
 | --- | --- | --- |
-| Claude | `settings.json`의 `effortLevel`(`$CLAUDE_CONFIG_DIR` 반영) | Claude Code가 설정을 다시 읽을 때. 이미 진행 중인 턴에는 적용되지 않음 |
-| Codex | `config.toml` 최상위 `model_reasoning_effort`(`$CODEX_HOME` 반영) | 다음 Codex 세션 |
-| Grok | 없음(파일 설정이 없음). 명령은 계속 출력 | — |
+| Claude | `settings.json`의 `ANTHROPIC_BASE_URL=http://127.0.0.1:8791`. SessionStart 훅이 프록시를 띄웁니다. | CLI가 이미 `output_config.effort`를 보냈을 때만 그 값 |
+| Codex | `model_provider = "jev"`, `base_url = "http://127.0.0.1:8791/codex"` | CLI가 이미 `reasoning.effort`를 보냈을 때만 그 값 |
+| Grok | 요청을 다시 쓰는 경로가 없음 | 훅이 `/effort <level>`을 출력 |
 
-주의: effort가 최소 한 턴 늦게 따라옵니다. 전역 설정이라 동시에 열린 다른 세션에도 적용됩니다. Claude의 모델별 `modelSettings.<model>.effortLevel`이 있으면 그 값이 우선합니다. fallback(API 키 없음, 시간 초과)일 때는 파일을 건드리지 않습니다. 쓰기는 원자적으로 하며 값이 이미 같으면 쓰지 않습니다.
+라우팅된 값이 설정의 `efforts` 목록에 있을 때만 요청을 바꿉니다. Jev가 답하지 않으면 훅이 세션 파일을 지우고, CLI가 원래 보내려던 effort가 그대로 통과합니다. 화면에 `applied to this prompt`로 끝나면 이번 프롬프트의 요청에 라우팅된 값이 실렸다는 뜻입니다. Codex의 스킬 단위 effort 지정(openai/codex#22908)과 Claude의 `effort:` frontmatter(anthropics/claude-code#69267)는 이 경로에 필요 없습니다. 프롬프트 캐시 측정 결과(2026-09-23): Claude는 한 세션에서 턴마다 effort를 바꿔도 앞부분 전체를 캐시에서 읽었고 새 턴 분량만 새로 썼습니다. Codex는 최근에 쓰지 않은 effort로 바꾼 첫 턴에서 캐시를 전혀 읽지 못했고, 이전에 썼던 effort로 돌아가면 캐시를 읽었습니다. Codex 쪽 캐시는 effort별로 따로 유지되는 것으로 보이며, 그래서 Codex에서 기어를 자주 바꾸면 캐시를 못 읽는 턴이 생깁니다.
 
 다음 경우 훅은 설정해 둔 effort를 그대로 쓰며, 턴을 막지 않습니다.
 
@@ -89,7 +86,9 @@ jev: effort=medium (jev-1.13.0, 0.58s, conf 95%) - model unchanged
 
    기존 `UserPromptSubmit` 훅이 있으면 덮어쓰지 말고 옆에 추가하세요.
 
-설정 파일은 `~/.config/jev-router/config.json`이며 `$JEV_ROUTER_HOME`으로 디렉터리를 바꿀 수 있습니다. 사용하는 키는 `efforts`, `judge_context_chars`, `native_fallbacks`, `auto_apply_effort`입니다.
+   Windows에서 Codex는 이 명령을 사용자 셸로 실행하는데, `Program Files` 아래의 따옴표로 감싼 `python.exe` 경로는 시작되지 않습니다. Codex 훅은 공백이 없는 경로의 `scripts/jev-effort.cmd`를 가리키세요(`jev-effort.cmd codex`, 첫 요청 전에 프록시를 띄우려면 `jev-effort.cmd codex --session-start`). 명령을 바꾸면 `/hooks`에서 새 명령을 신뢰하기 전까지 Codex가 그 훅을 건너뜁니다.
+
+설정 파일은 `~/.config/jev-router/config.json`이며 `$JEV_ROUTER_HOME`으로 디렉터리를 바꿀 수 있습니다. 사용하는 키는 `efforts`, `judge_context_chars`, `native_fallbacks`입니다. 프록시는 `127.0.0.1:8791`에서 듣습니다(`$JEV_EFFORT_PROXY_PORT`로 포트를 바꿀 수 있으며, 훅과 base URL이 같은 포트를 써야 합니다).
 
 ## 대시보드
 
@@ -97,18 +96,26 @@ jev: effort=medium (jev-1.13.0, 0.58s, conf 95%) - model unchanged
 python scripts/jev_dashboard.py --open   # http://127.0.0.1:8787
 ```
 
-실행마다 다음을 보여 줍니다.
+대시보드는 기어박스 시프트 게이트 모양입니다. 프롬프트 하나가 기어 변속 한 번이고, 훅이 기어를 *선택*하면 프록시가 실제 요청에 *체결*합니다.
 
-- 난이도와 분류, 선택된 effort와 그 신뢰도·확률 분포, Jev가 골랐는지 사용자 설정인지
-- `프롬프트 → 작업/의존성 → effort 결정` 근거 다이어그램
-- fallback 여부와 이유, 이어받은 모델, 상태, 소요 시간, 토큰 사용량, 마스킹된 결과 요약
-- 새 기록이 생기면 자동 갱신
+- **게이트 판:** `efforts` 목록으로 그린 H패턴 게이트. 노브가 마지막 프롬프트가 실행된 기어에 꽂혀 있고, 체결 상태, 호스트, 세션, Jev 응답 시간과 확신도, 프롬프트 일부, Jev의 확률 분포를 보여 줍니다.
+- **상단 표시등:** `:8791` effort 프록시가 켜져 있는지.
+- **기본 기어:** provider별 fallback effort. 그 자리에서 바꿀 수 있습니다.
+- **변속 기록:** 턴마다 한 줄이며, 펼치면 프롬프트와 근거가 나옵니다. 예전 위임 실행은 `프롬프트 → 작업 → effort` 근거 흐름을 그대로 보여 줍니다.
 
-훅 기록의 effort는 라우팅(또는 fallback)된 값입니다. 사용자가 실제로 `/effort`로 적용했는지는 나타내지 않습니다.
+턴마다 프록시 요청 로그(`<router home>/effort/applied.log`)를 세션과 시각으로 이어 붙여 다음 중 하나로 표시합니다.
+
+| 표시 | 뜻 |
+| --- | --- |
+| Engaged(체결) | 프록시가 그 턴의 요청에 라우팅된 값을 넣었습니다(실제로 값을 바꾼 요청 수도 표시). |
+| Selected, not engaged(선택만 됨) | Jev가 값을 골랐지만 그 턴의 요청이 프록시를 거치지 않아 호스트 자체 설정으로 실행됐습니다. |
+| Fallback | Jev가 제한 시간 안에 답하지 않아 호스트 자체 설정으로 실행됐습니다. |
+
+로그 근거 없이 체결됐다고 추정하지 않습니다. Grok의 턴은 최대 "선택만 됨"입니다.
 
 ### Provider별 fallback effort
 
-첫 번째 설정 패널에서 Jev가 제시간에 답하지 못했을 때 provider별로 쓸 effort를 정합니다. provider마다 따로 저장되며, **No default — parent handles fallback**을 고르면 해당 값을 지웁니다. 선택지는 `efforts` 목록에서 가져옵니다.
+**Default gear** 패널에서 Jev가 제시간에 답하지 못했을 때 provider별로 쓸 effort를 정합니다. provider마다 따로 저장되며, **Host's own setting**을 고르면 해당 값을 지웁니다. 선택지는 `efforts` 목록에서 가져옵니다.
 
 ```json
 {"native_fallbacks":{"codex":{"effort":"medium"},"claude":{"effort":null},"grok":{"effort":null}}}
@@ -132,7 +139,7 @@ python scripts/jev_dashboard.py --open   # http://127.0.0.1:8787
 - loopback에만 바인딩하고 외부 바인딩은 거부합니다.
 - 실행 기록은 읽기 전용입니다. 유일한 쓰기는 `PUT /api/config`(`native_fallbacks`만)이며, same-origin JSON 요청만 받고 파일을 원자적으로 교체합니다.
 - 화면에 표시하는 프롬프트와 요약에서 흔한 API 키, bearer 토큰, 비밀번호, GitHub 토큰, 홈 디렉터리 경로를 가립니다.
-- CDN, 분석, 웹폰트, 텔레메트리를 쓰지 않습니다. 디렉터리 탐색을 막도록 run ID와 리포트 경로를 검증하고, 제한적인 CSP·frame·MIME·referrer·cache 헤더를 보냅니다.
+- CDN, 외부 웹폰트, 분석, 텔레메트리를 쓰지 않습니다. 글꼴 하나(Barlow Condensed, SIL OFL)는 `dashboard/fonts/`에서 제공합니다. 디렉터리 탐색을 막도록 run ID와 리포트 경로를 검증하고, 제한적인 CSP·frame·MIME·referrer·cache 헤더를 보냅니다.
 
 실행 기록에는 프롬프트 원문(최대 12,000자)이 디스크에 저장됩니다. `~/.config/jev-router/runs`를 커밋하거나 확인하지 않은 스크린샷을 공개하지 마세요.
 
