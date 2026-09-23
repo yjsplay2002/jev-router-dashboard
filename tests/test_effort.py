@@ -138,6 +138,7 @@ class HookTests(unittest.TestCase):
         context = payload["hookSpecificOutput"]["additionalContext"]
         self.assertIn("Routed effort for this turn: high", context)
         self.assertIn("do not propose switching it", context)
+        self.assertIn("reply in the language of the user's prompt", context)
         records = list((self.home / "runs").glob("*-effort-abcdef12/run.json"))
         self.assertEqual(len(records), 1)
         record = json.loads(records[0].read_text(encoding="utf-8"))

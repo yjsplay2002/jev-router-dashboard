@@ -156,7 +156,8 @@ def main() -> int:
     context = (f"Routed effort for this turn: {result['effort']} "
                f"({'jev' if result['routed'] else 'your configured default'}). "
                f"{DEPTH.get(str(result['effort']), '')} "
-               "The model is unchanged; do not propose switching it.")
+               "The model is unchanged; do not propose switching it. "
+               "This note is in English only for the model: reply in the language of the user's prompt.")
 
     try:
         write_record(result, prompt[:12000], provider, str(event.get("session_id") or ""))
