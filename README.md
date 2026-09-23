@@ -43,7 +43,14 @@ jev: effort=medium (jev-1.13.0, 0.58s, conf 95%) - model unchanged
 | Codex | `model_provider = "jev"` with `base_url = "http://127.0.0.1:8791/codex"` | `reasoning.effort`, only if the CLI already sent one |
 | Grok | no rewrite path | the hook prints `/effort <level>` |
 
-The proxy rewrites a request only when the routed level is in the configured `efforts` list. If Jev does not answer, the hook deletes the session file and the CLI's own effort passes through. A visible line ending in `applied to this prompt` means this prompt's requests carried the routed level. Codex has no skill-scoped effort override (openai/codex#22908) and Claude's `effort:` frontmatter is reported as inert (anthropics/claude-code#69267); neither is required for this path. Prompt cache, measured 2026-09-23: on Claude, switching the effort between turns of one session kept reading the whole prefix from cache (only the new turn was written). On Codex the first turn in an effort level the session had not used recently read nothing from cache, while returning to a level used earlier hit it, so the cache appears to be kept per effort level there; frequent gear changes on Codex cost cache misses.
+The proxy rewrites a request only when the routed level is in the configured `efforts` list. If Jev does not answer, the hook deletes the session file and the CLI's own effort passes through. A visible line ending in `applied to this prompt` means this prompt's requests carried the routed level. Codex has no skill-scoped effort override (openai/codex#22908) and Claude's `effort:` frontmatter is reported as inert (anthropics/claude-code#69267); neither is required for this path. Prompt cache, measured 2026-09-23: on Claude, switching the effort between turns of one session kept reading the whole prefix from cache (only the new turn was written). On Codex the first turn in an effort level the session had not used yet read nothing from cache, while returning to a level used earlier hit it, so the cache appears to be kept per effort level there. A repeat run on the same day (one session each, `codex exec` + `resume`):
+
+| Run | Effort per turn | Cached share of input |
+| --- | --- | --- |
+| Control | medium ×6 | 0% (first turn), 99, 99, 99, 98, **0%** |
+| Switching | high, low, low, high, medium, medium, low, high | 65% (first turn), **0**, 99, 98, **0**, 99, 99, 99 |
+
+Both misses in the switching run fell exactly on the first use of a new level (first low, first medium); all three returns to a level already used hit. In practice a Codex session pays about one cache miss per effort level, the first time it uses it. The control run also missed once without any effort change, and the first switching turn read 65% from cache although that level had not been used in that session, so Codex's cache is not strictly partitioned by effort and also misses on its own. One session per run is a small sample.
 
 The hook falls back to your configured effort, and never blocks the turn, when:
 

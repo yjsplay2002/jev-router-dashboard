@@ -43,7 +43,14 @@ jev: effort=medium (jev-1.13.0, 0.58s, conf 95%) - model unchanged
 | Codex | `model_provider = "jev"`, `base_url = "http://127.0.0.1:8791/codex"` | CLI가 이미 `reasoning.effort`를 보냈을 때만 그 값 |
 | Grok | 요청을 다시 쓰는 경로가 없음 | 훅이 `/effort <level>`을 출력 |
 
-라우팅된 값이 설정의 `efforts` 목록에 있을 때만 요청을 바꿉니다. Jev가 답하지 않으면 훅이 세션 파일을 지우고, CLI가 원래 보내려던 effort가 그대로 통과합니다. 화면에 `applied to this prompt`로 끝나면 이번 프롬프트의 요청에 라우팅된 값이 실렸다는 뜻입니다. Codex의 스킬 단위 effort 지정(openai/codex#22908)과 Claude의 `effort:` frontmatter(anthropics/claude-code#69267)는 이 경로에 필요 없습니다. 프롬프트 캐시 측정 결과(2026-09-23): Claude는 한 세션에서 턴마다 effort를 바꿔도 앞부분 전체를 캐시에서 읽었고 새 턴 분량만 새로 썼습니다. Codex는 최근에 쓰지 않은 effort로 바꾼 첫 턴에서 캐시를 전혀 읽지 못했고, 이전에 썼던 effort로 돌아가면 캐시를 읽었습니다. Codex 쪽 캐시는 effort별로 따로 유지되는 것으로 보이며, 그래서 Codex에서 기어를 자주 바꾸면 캐시를 못 읽는 턴이 생깁니다.
+라우팅된 값이 설정의 `efforts` 목록에 있을 때만 요청을 바꿉니다. Jev가 답하지 않으면 훅이 세션 파일을 지우고, CLI가 원래 보내려던 effort가 그대로 통과합니다. 화면에 `applied to this prompt`로 끝나면 이번 프롬프트의 요청에 라우팅된 값이 실렸다는 뜻입니다. Codex의 스킬 단위 effort 지정(openai/codex#22908)과 Claude의 `effort:` frontmatter(anthropics/claude-code#69267)는 이 경로에 필요 없습니다. 프롬프트 캐시 측정 결과(2026-09-23): Claude는 한 세션에서 턴마다 effort를 바꿔도 앞부분 전체를 캐시에서 읽었고 새 턴 분량만 새로 썼습니다. Codex는 그 세션에서 아직 쓰지 않은 effort로 바꾼 첫 턴에서 캐시를 전혀 읽지 못했고, 이전에 썼던 effort로 돌아가면 캐시를 읽었습니다. Codex 쪽 캐시는 effort별로 따로 유지되는 것으로 보입니다. 같은 날 다시 측정한 결과입니다(각 한 세션, `codex exec` + `resume`).
+
+| 실행 | 턴별 effort | 입력 중 캐시 비율 |
+| --- | --- | --- |
+| 대조군 | medium ×6 | 0%(첫 턴), 99, 99, 99, 98, **0%** |
+| 전환 | high, low, low, high, medium, medium, low, high | 65%(첫 턴), **0**, 99, 98, **0**, 99, 99, 99 |
+
+전환 실행에서 캐시를 못 읽은 두 턴은 정확히 새 effort를 처음 쓴 턴(첫 low, 첫 medium)이었고, 이미 쓴 effort로 돌아간 세 번은 모두 캐시를 읽었습니다. 실제로는 Codex 세션이 effort마다 처음 쓸 때 캐시 미스를 한 번 겪는 정도입니다. 다만 대조군도 effort 변경 없이 한 번 캐시를 못 읽었고, 전환 실행의 첫 턴은 그 세션에서 처음 쓰는 effort인데도 65%를 캐시에서 읽었습니다. Codex 캐시가 effort별로 완전히 나뉘는 것은 아니며, effort와 무관하게 캐시를 못 읽는 경우도 있습니다. 실행마다 세션 하나라 표본이 작습니다.
 
 다음 경우 훅은 설정해 둔 effort를 그대로 쓰며, 턴을 막지 않습니다.
 
