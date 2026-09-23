@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """The effort router must never route the model and never outlive its 1 second cap."""
 import importlib.util
+import io
 import json
+import os
+import sys
 import tempfile
 import time
 import unittest
@@ -69,6 +72,7 @@ class EffortRouterTests(unittest.TestCase):
         result = self.run_with(boom)
         self.assertFalse(result["routed"])
         self.assertEqual(result["effort"], "medium")
+        self.assertIn("OSError", result["reason"])  # the cause survives, it is not flattened
         no_key = effort.build("task", "codex", CONFIG, {}, 1.0)
         self.assertEqual(no_key["reason"], "no TYPESAFE_API_KEY")
         self.assertEqual(no_key["effort"], "medium")
@@ -88,6 +92,80 @@ class EffortRouterTests(unittest.TestCase):
         effort.build("x" * 5000, "codex", CONFIG, ENV, 1.0)
         self.assertEqual(len(seen["state"]), 200)
 
+
+
+class HookTests(unittest.TestCase):
+    """The hook must emit valid hook JSON, route the turn, and never block it."""
+
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location("jev_effort_hook", ROOT / "scripts" / "jev_effort_hook.py")
+        self.hook = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.hook)
+        self.temp = tempfile.TemporaryDirectory()
+        self.home = Path(self.temp.name)
+        (self.home / "config.json").write_text(json.dumps(CONFIG), encoding="utf-8")
+        (self.home / ".env").write_text("TYPESAFE_API_KEY=test-key\n", encoding="utf-8")
+        self._env = os.environ.get("JEV_ROUTER_HOME")
+        os.environ["JEV_ROUTER_HOME"] = str(self.home)
+
+    def tearDown(self):
+        if self._env is None:
+            os.environ.pop("JEV_ROUTER_HOME", None)
+        else:
+            os.environ["JEV_ROUTER_HOME"] = self._env
+        self.temp.cleanup()
+
+    def invoke(self, event, provider="claude", choice="high"):
+        self.hook.jev_effort.ask_jev = lambda *a, **k: {
+            "model": "jev-1.13.0", "answers": {"effort": {"choice": choice, "confidence": 0.9}}}
+        out, err = io.StringIO(), io.StringIO()
+        stdin, stdout = sys.stdin, sys.stdout
+        sys.stdin, sys.stdout = io.StringIO(json.dumps(event)), out
+        try:
+            code = self.hook.main.__wrapped__() if hasattr(self.hook.main, "__wrapped__") else self.hook.main()
+        finally:
+            sys.stdin, sys.stdout = stdin, stdout
+        return code, out.getvalue().strip(), err
+
+    def test_routes_the_turn_and_names_the_host_apply_command(self):
+        sys.argv = ["hook", "claude"]
+        code, out, _ = self.invoke({"prompt": "trace why the migration drops rows", "session_id": "abcdef1234"})
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        self.assertTrue(payload["continue"])
+        self.assertIn("effort=high", payload["systemMessage"])
+        self.assertIn("/effort high", payload["systemMessage"])
+        context = payload["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("Routed effort for this turn: high", context)
+        self.assertIn("do not propose switching it", context)
+        records = list((self.home / "runs").glob("*-effort-abcdef12/run.json"))
+        self.assertEqual(len(records), 1)
+        record = json.loads(records[0].read_text(encoding="utf-8"))
+        self.assertEqual(record["mode"], "turn_effort")
+        self.assertEqual(record["execution_backend"], "same_session")
+        self.assertEqual(record["tasks"][0]["execution"]["requested_effort"], "high")
+        self.assertIsNone(record["tasks"][0]["execution"]["actual_model"])
+
+    def test_codex_gets_its_own_apply_hint(self):
+        sys.argv = ["hook", "codex"]
+        _, out, _ = self.invoke({"prompt": "rename one variable"}, choice="low")
+        self.assertIn("Alt+.", json.loads(out)["systemMessage"])
+
+    def test_commands_and_empty_prompts_are_left_alone(self):
+        sys.argv = ["hook", "claude"]
+        for prompt in ("", "   ", "/effort high"):
+            code, out, _ = self.invoke({"prompt": prompt})
+            self.assertEqual(code, 0)
+            self.assertEqual(out, "")
+
+    def test_a_child_turn_is_never_routed(self):
+        sys.argv = ["hook", "claude"]
+        os.environ["JEV_ROUTER_CHILD"] = "1"
+        try:
+            code, out, _ = self.invoke({"prompt": "do the thing"})
+        finally:
+            os.environ.pop("JEV_ROUTER_CHILD")
+        self.assertEqual((code, out), (0, ""))
 
 if __name__ == "__main__":
     unittest.main()

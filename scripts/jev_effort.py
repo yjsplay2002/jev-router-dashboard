@@ -24,6 +24,8 @@ import urllib.request
 from pathlib import Path
 
 API_URL = "https://api.typesafe.ai/v1/systemone"
+# urllib's default User-Agent is refused by the endpoint's edge (Cloudflare error 1010).
+USER_AGENT = "jev-router/0.5 (+https://github.com/yjsplay2002/jev-router-dashboard)"
 DEFAULT_EFFORTS = ("low", "medium", "high")
 DEFAULT_EFFORT = "medium"
 PROVIDERS = ("codex", "claude", "grok")
@@ -96,7 +98,8 @@ def ask_jev(state: str, efforts: tuple[str, ...], api_key: str, model: str, time
     }).encode("utf-8")
     request = urllib.request.Request(
         API_URL, data=body, method="POST",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json",
+                 "User-Agent": USER_AGENT, "Accept": "application/json"},
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed HTTPS endpoint
         return json.loads(response.read().decode("utf-8"))
@@ -109,16 +112,17 @@ def decide(state: str, efforts: tuple[str, ...], api_key: str, model: str, timeo
         try:
             box["payload"] = ask_jev(state, efforts, api_key, model, timeout)
         except Exception as exc:  # any transport or decode failure is a no-route, never a crash
-            box["error"] = type(exc).__name__
+            code = getattr(exc, "code", None)
+            box["error"] = f"{type(exc).__name__} {code}".strip() if code else type(exc).__name__
     thread = threading.Thread(target=worker, daemon=True)
     started = time.monotonic()
     thread.start()
     thread.join(timeout)
     elapsed = time.monotonic() - started
     if thread.is_alive():
-        return None, elapsed, "timeout"
+        return None, elapsed, "timeout"  # the request is abandoned, not awaited
     if "error" in box:
-        return None, elapsed, "error"
+        return None, elapsed, str(box["error"])
     if elapsed > timeout:
         return None, elapsed, "timeout"
     return box.get("payload"), elapsed, "jev"  # type: ignore[return-value]
@@ -145,7 +149,8 @@ def build(task: str, provider: str, config: dict[str, object], env: dict[str, st
     payload, elapsed, reason = decide(state, efforts, api_key, model, timeout)
     result["elapsed_seconds"] = round(elapsed, 3)
     if payload is None:
-        result["reason"] = f"{elapsed:.2f}s > {timeout:.1f}s cap" if reason == "timeout" else "jev unreachable"
+        result["reason"] = (f"{elapsed:.2f}s > {timeout:.1f}s cap" if reason == "timeout"
+                            else f"jev unreachable ({reason})")
         return result
 
     answer = ((payload.get("answers") or {}).get("effort") or {}) if isinstance(payload, dict) else {}

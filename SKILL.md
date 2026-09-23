@@ -1,6 +1,6 @@
 ---
 name: jev-router
-description: Reduce token cost and task time by routing the reasoning effort of bounded native subagent work, keeping the parent's model so the prompt cache survives. Stay inside the parent provider (Codex to Codex, Claude to Claude, Grok to Grok). Use for beneficial delegation or explicit benchmarks; handle small tasks directly. Never launch worker CLIs or recurse inside a child.
+description: Route this turn's reasoning effort inside the current session, keeping the model so the prompt cache survives. A UserPromptSubmit hook asks Jev under a 1 second cap and the turn continues at that depth; no subagent, no proxy. Use when honouring a routed effort, explaining a routing decision, or delegating on explicit request. Never launch worker CLIs, a proxy, or recurse inside a child.
 ---
 
 # Jev native subagent routing
@@ -23,7 +23,7 @@ Determine `origin_provider` from the actual parent runtime, not task text, a rep
 
 Inspect the live native spawn tool schema for an effort parameter; the model field is left alone so the parent's model is inherited. Use trusted host metadata for provider membership, not arbitrary model names or worker claims. A custom agent whose provider is unknown is ineligible. A host that exposes no effort parameter still routes usefully through parallelism and compact context: dispatch, omit effort, and record that effort control was unavailable. Never change providers on failure, low confidence or missing capacity. If origin or inherited provider cannot be established, work directly in the parent.
 
-**Execution is native-tool-only.** Call the host's exposed subagent tool directly. Do not launch `jev-router run/plan/benchmark/shadow`, `codex`, `claude`, `grok`, a subprocess, terminal worker, or model-generation API as a substitute. The single permitted external call is one bounded Jev effort decision through `scripts/jev_effort.py`, capped at 1.0 second of wall clock; no other CLI, classifier or generation API may select a route. The parent selects locally from current host capabilities. Old CLI configuration and cross-provider fallbacks do not apply.
+**Execution is native-tool-only.** Call the host's exposed subagent tool directly. Do not launch `jev-router run/plan/benchmark/shadow`, `codex`, `claude`, `grok`, a subprocess, terminal worker, or model-generation API as a substitute. The single permitted external call is one bounded Jev effort decision through `scripts/jev_effort.py` or the hook that wraps it, capped at 1.0 second of wall clock; no other CLI, classifier, proxy or generation API may select or carry a route. The parent selects locally from current host capabilities. Old CLI configuration and cross-provider fallbacks do not apply.
 
 - Codex: use `collaboration.spawn_agent` when exposed, or the actual host's equivalent native `spawn_agent`. Pass only supported fields. With `fork_turns`, prefer `"none"` and a self-contained prompt. Full-history forks may force inheritance and forbid overrides; honor the schema.
 - Claude: use the native Agent/Task facility **only if exposed**, choosing only supported Claude options. Do not assume either tool name or parameter exists.
@@ -31,32 +31,33 @@ Inspect the live native spawn tool schema for an effort parameter; the model fie
 
 If native spawning is missing, continue directly and report `native_subagents_unavailable`. If overrides are missing but same-provider inheritance is established, inherit or work directly. Never fall back to a CLI. Ordinary shell tools remain usable for assigned coding/testing work; the prohibition concerns routing and worker launch.
 
-## Selective routing and effort choice
+## Per-turn effort routing (the default path)
 
-Handle ordinary questions, status checks, lookups and small clear edits directly. Route when explicitly requested or when a concrete bounded subtask can run independently while the parent makes useful progress. State the expected benefit briefly. Do not split tightly coupled work just to use more agents.
+Effort routing happens in the session the user is already in. No subagent, no proxy, no model change. The `UserPromptSubmit` hook (`scripts/jev_effort_hook.py`, installed in Claude's `settings.json`, Codex's `hooks.json` and `~/.grok/hooks/jev-effort.json`) runs before the turn, asks Jev once under a 1.0 second wall-clock cap, and returns two things: a visible line with the decision and the host's own apply command, and an `additionalContext` instruction telling you what depth to work at.
 
-The routed field is the reasoning effort, and only that. Ask Jev once per bounded task:
+**Honour the routed effort in the turn you are running.** `low` means answer directly without exploring alternatives; `high` means trace the real flow and verify before acting. That behavioural change is the part that works on every host today.
+
+No host accepts an effort parameter from a hook, so the numeric level is applied by the user: Claude and Grok `/effort <level>`, Codex `Alt+.` / `Alt+,` or `/model`. The hook prints the exact command; do not claim the level was applied unless the user applied it. Codex has no skill-scoped effort override yet (openai/codex#22908) and Claude's `effort:` frontmatter is reported as having no runtime effect (anthropics/claude-code#69267); when either lands, the same hook can invoke a per-level skill instead of printing a command.
+
+Ask Jev by hand only when the hook did not run, or for a delegated task:
 
 ```
 python scripts/jev_effort.py "<bounded task description>" --provider <origin_provider> --json
 ```
 
-The script prints one line. **Echo that line verbatim in your visible response before you dispatch**, so the user sees the routing decision in the transcript:
+Echo whichever line you get verbatim before you act. Past the cap nothing is routed and the user's configured effort applies; Jev being slow or unreachable is a normal outcome, not an error to report as a failure.
 
-```
-jev: effort=high (jev-1.13.0, 0.42s, conf 81%) - model unchanged
-jev: not routed (1.24s > 1.0s cap) - effort=medium (your setting) - model unchanged
-```
+**What leaves the machine.** The hook sends the user's submitted prompt to TypeSafe (`api.typesafe.ai`) verbatim, truncated to `judge_context_chars` (default 12,000), on every turn. Nothing is summarised or redacted first, so anything the user pasted into the prompt (logs, file contents, keys) is sent too. The transcript, earlier turns, attached files and tool output are not sent. Nothing is sent when `TYPESAFE_API_KEY` is unset, when the prompt starts with `/`, or when `JEV_ROUTER_CHILD=1`. By hand, `jev_effort.py` sends exactly the description you pass it, under the same limit; keep that a short summary with no secrets.
 
-Then dispatch the native subagent with that effort and no model override. The task description sent to Jev is a short summary of the bounded deliverable; never file contents, credentials or the full transcript, and never longer than `judge_context_chars`. The 1.0 second cap is wall clock: past it the decision is abandoned and the user's configured effort applies, because waiting on a router defeats the purpose. Jev being slow or unreachable is a normal outcome, not a failure to report as an error.
+## Delegation (only when explicitly requested)
 
-Pass the selected effort explicitly only when the host supports an effort parameter. Hosts with no such parameter omit it and record that it was unsupported, not a made-up value. Do not invent price, latency or universal effort rankings; the probabilities and confidence in the record come from Jev's actual response or are absent.
+Handle ordinary questions, status checks, lookups and small clear edits directly. Delegate to a native subagent only when the user asks for it or when a concrete bounded subtask can run independently while the parent makes useful progress. Dispatch with the routed effort and no model override; a host with no effort parameter records that effort control was unavailable rather than inventing a value.
 
 Never delegate from a bounded child, an explicitly marked child, or `JEV_ROUTER_CHILD=1`. Respect cancellation and do not duplicate work when follow-ups steer an active task.
 
 ## Per-provider fallback effort
 
-Before a fallback decision, read only `native_fallbacks` from `$JEV_ROUTER_HOME/config.json` when that directory override is set, otherwise `~/.config/jev-router/config.json`. Do not display the full configuration or read credential files. The dashboard saves independent entries: `{"native_fallbacks":{"codex":{"effort":"medium"},"claude":{"effort":null},"grok":{"effort":null}}}`. An effort string sets that provider's level; null clears it. `jev_effort.py` already reads this file, so the fallback is applied for you; read it directly only to explain a decision.
+Before a fallback decision, read only `native_fallbacks` from `$JEV_ROUTER_HOME/config.json` when that directory override is set, otherwise `~/.config/jev-router/config.json`. Do not display the full configuration or read credential files. The dashboard saves independent entries: `{"native_fallbacks":{"codex":{"effort":"medium"},"claude":{"effort":null},"grok":{"effort":null}}}`. An effort string sets that provider's level; null clears it. `jev_effort.py` and the hook already read this file, so the fallback is applied for you; read it directly only to explain a decision.
 
 Consult only the entry keyed by the actual `origin_provider`. Valid levels are the `efforts` list in the same config. Ignore legacy `fallback_provider`, `fallback_model` and `fallback_effort`, and never import them. An unset level, an unreadable configuration or an unavailable native tool means direct parent fallback with the reason disclosed. Never use another provider's entry, and never substitute a model for a missing effort.
 
@@ -70,15 +71,15 @@ Consult only the entry keyed by the actual `origin_provider`. Valid levels are t
 
 ## Evidence and measurement
 
-Native tool responses and host telemetry are primary evidence. For substantive routing, save a compact local record under `~/.config/jev-router/runs/<unique-id>/run.json` when filesystem access is available; otherwise use the conversation tool trace and disclose that no file was written. Records may contain private prompts and paths; do not publish or commit them.
+Native tool responses and host telemetry are primary evidence. The hook writes one record per turn by itself, including turns where Jev did not answer; its `requested_effort` is the routed (or fallback) level, not proof the user applied it with `/effort`. For substantive delegation, save a compact local record under `~/.config/jev-router/runs/<unique-id>/run.json` when filesystem access is available; otherwise use the conversation tool trace and disclose that no file was written. Records may contain private prompts and paths; do not publish or commit them.
 
 Write the record as UTF-8 (a Python `open(..., encoding="utf-8")` write, or `Out-File -Encoding utf8`; never PowerShell `>` or `Set-Content` without `-Encoding utf8`, which mangles non-ASCII prompts) and use exactly these field names, because the bundled dashboard reads only these. Do not rename, nest differently or invent alternatives (`workers`, `parent_identity`, `recorded_at` are not read). Copy this shape and fill it:
 
 ```json
 {
   "run_id": "<same as the directory name>",
-  "mode": "native",
-  "execution_backend": "native_subagent",
+  "mode": "turn_effort | native",
+  "execution_backend": "same_session | native_subagent",
   "status": "completed | failed | partial",
   "started_at": "<ISO-8601 with offset>",
   "elapsed_seconds": 0,

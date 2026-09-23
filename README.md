@@ -1,96 +1,129 @@
-# Jev Router Dashboard
+# Jev Router
 
-A local dashboard for understanding how Jev chose a task's reasoning effort, what the routed native subagent actually did, and which fallback effort the next task will use. The model is never routed: switching models throws away the host's prompt cache, so the parent's model is inherited unchanged and only the effort moves.
+[한국어](README.ko.md)
+
+A skill for Claude Code, Codex and Grok that picks the reasoning effort for each turn with Jev, plus a local dashboard for the records it leaves. **The model is never routed.** Switching models discards the host's prompt cache, which costs more than a cheaper model saves, so the model you selected is kept and only the effort changes.
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
 ![Runtime](https://img.shields.io/badge/runtime-Python%203.10%2B-66f2c2)
 
-## What it shows
+## What's in the repository
 
-- difficulty and category classification;
-- effort selection confidence and probability distribution, and whether Jev or your own setting chose it;
-- an always-open `prompt → task/dependencies → effort decision` evidence diagram for every run;
-- fallback decisions and reasons;
-- routed effort and the inherited model;
-- status, duration, exit code, token usage, and a redacted result summary;
-- links to Jev's generated local HTML reports.
-- always-expanded task details with automatic live updates as new run records appear.
-- independent native fallback effort selectors for Codex, Claude, and Grok;
+| Path | Role |
+| --- | --- |
+| `scripts/jev_effort_hook.py` | `UserPromptSubmit` hook. Asks Jev for this turn's effort before the turn starts and tells the model how deeply to work. |
+| `scripts/jev_effort.py` | The single Jev call (1.0 s cap). The hook uses it, and you can run it by hand. |
+| `SKILL.md` | Instructions the agent follows: honour the routed effort, delegate only on request, record evidence. |
+| `scripts/jev_dashboard.py`, `dashboard/` | Local dashboard for run records and per-provider fallback effort. |
+| `tests/` | `python -m unittest discover -s tests -v` |
 
-Probability records are normalized whether Jev stored them as fractions (`0.73`) or percentages (`73`), so both labels and gauges render as `73%`. The dashboard reads existing `~/.config/jev-router/runs/*/run.json` files and never modifies run data. Its only write operation atomically updates native provider defaults in Jev's local `config.json`; unrelated settings are preserved. It does not call external services or require a database.
+No third-party runtime dependencies; Python 3.10 or newer.
 
-## Native provider defaults
+## How per-turn routing works
 
-The first settings panel lets you choose a fallback effort independently for each provider. It applies whenever Jev does not answer within the 1 second cap. Saving Codex does not replace Claude or Grok's settings. Choose **No default — parent handles fallback** to clear a provider's preference. The levels come from Jev's own `efforts` list; the dashboard reads no model catalog and launches no CLI.
+1. You submit a prompt. The host runs the hook with the prompt on stdin.
+2. The hook asks Jev once, capped at 1.0 second of wall clock (monotonic clock around a worker thread, so a slow DNS lookup or hung socket cannot stall the turn).
+3. It returns a visible line with the decision and an `additionalContext` instruction telling the model what depth to work at (`low` = answer directly, `high` = trace the real flow and verify).
+4. It writes one run record to `~/.config/jev-router/runs/<id>/run.json`.
+
+```bash
+echo '{"prompt":"trace why the migration drops rows"}' | python scripts/jev_effort_hook.py claude
+jev: effort=high (jev-1.13.0, 0.39s, conf 99%) - model unchanged -> apply: /effort high
+
+python scripts/jev_effort.py "add a retry guard to the order submit path" --provider codex --json
+jev: effort=medium (jev-1.13.0, 0.58s, conf 95%) - model unchanged
+```
+
+**The hook does not change the host's effort setting.** No host accepts an effort level from a hook. The behavioural instruction works on every host; the numeric level only changes if you run the printed command yourself: Claude and Grok `/effort <level>`, Codex `Alt+.` / `Alt+,` or `/model`. Codex has no skill-scoped effort override (openai/codex#22908) and Claude's `effort:` frontmatter is reported as inert (anthropics/claude-code#69267).
+
+The hook falls back to your configured effort, and never blocks the turn, when:
+
+- `TYPESAFE_API_KEY` is not set (no request is made);
+- Jev takes longer than 1.0 s (measured: 0.39–0.48 s warm, about 1.02 s on a cold TLS handshake);
+- Jev is unreachable or returns no usable level.
+
+Prompts starting with `/` and runs with `JEV_ROUTER_CHILD=1` are skipped entirely. Any error exits 0 with no output.
+
+## What leaves your machine
+
+- **The hook sends your submitted prompt to TypeSafe (`api.typesafe.ai`) verbatim on every turn**, truncated to `judge_context_chars` (default 12,000 characters). It is not summarised or redacted first: if you paste logs, file contents or keys into the prompt, they are sent.
+- The conversation transcript, earlier turns, attached files and tool output are not sent.
+- `jev_effort.py` sends exactly the description you pass it, under the same limit.
+- The dashboard makes no external calls.
+
+If that is not acceptable for a project, leave `TYPESAFE_API_KEY` unset or remove the hook entry.
+
+## Install
+
+1. Copy the repository into the skill directory, e.g. `~/.claude/skills/jev-router` (Claude) and/or `~/.codex/skills/jev-router` (Codex). Grok's hook can point at either copy.
+2. Put the API key in `~/.config/jev-router/.env` as `TYPESAFE_API_KEY=...` (or `$JEV_ROUTER_HOME/.env`).
+3. Add a `UserPromptSubmit` hook. The last argument is the host (`claude`, `codex` or `grok`):
+
+   | Host | File |
+   | --- | --- |
+   | Claude | `~/.claude/settings.json` |
+   | Codex | `~/.codex/hooks.json` |
+   | Grok | `~/.grok/hooks/jev-effort.json` |
+
+   ```json
+   {
+     "hooks": {
+       "UserPromptSubmit": [
+         {"hooks": [{"type": "command", "command": "python /path/to/jev-router/scripts/jev_effort_hook.py claude", "timeout": 3}]}
+       ]
+     }
+   }
+   ```
+
+   Add it next to any existing `UserPromptSubmit` hooks rather than replacing them.
+
+Configuration lives in `~/.config/jev-router/config.json` (`$JEV_ROUTER_HOME` overrides the directory). The keys used are `efforts`, `judge_context_chars` and `native_fallbacks`.
+
+## Dashboard
+
+```bash
+python scripts/jev_dashboard.py --open   # http://127.0.0.1:8787
+```
+
+It shows, for each run:
+
+- difficulty and category, the chosen effort, its confidence and probability distribution, and whether Jev or your setting chose it;
+- a `prompt → task/dependencies → effort decision` evidence diagram;
+- fallback decisions and reasons, the inherited model, status, duration, token usage and a redacted result summary;
+- live updates as new records appear.
+
+In a hook record, the effort is the routed (or fallback) level. It does not show whether you actually applied it with `/effort`.
+
+### Per-provider fallback effort
+
+The first settings panel sets the effort each provider uses when Jev does not answer in time. Each provider is saved separately; **No default — parent handles fallback** clears one. Levels come from the `efforts` list.
 
 ```json
 {"native_fallbacks":{"codex":{"effort":"medium"},"claude":{"effort":null},"grok":{"effort":null}}}
 ```
 
-The router skill (`SKILL.md`) reads only the actual parent's provider entry. Codex stays within OpenAI/Codex, Claude within Claude, and Grok within Grok. A host that exposes no effort parameter records that effort control was unavailable rather than inventing a value; an unset level leaves the fallback choice with the parent.
+`GET /api/config` returns the three entries plus `effort_options`. `PUT /api/config` accepts a partial `native_fallbacks` object and keeps omitted providers. Unknown providers, unknown levels and any attempt to set a model are rejected without writing. Other settings in the file are preserved.
 
-`GET /api/config` returns all three native entries plus the available `effort_options`; `PUT /api/config` accepts a partial `native_fallbacks` object and preserves omitted providers. A null or empty effort clears that entry. Unknown providers, unknown levels and any attempt to set a model are rejected without writing. Obsolete CLI policy fields are neither exposed nor editable; existing unrelated configuration is preserved.
-
-## Run locally
-
-Python 3.10 or newer is sufficient; there are no third-party runtime dependencies.
-
-```bash
-git clone https://github.com/yjsplay2002/jev-router-dashboard.git
-cd jev-router-dashboard
-python scripts/jev_dashboard.py --open
-```
-
-Then visit <http://127.0.0.1:8787>.
-
-Useful options:
+Options:
 
 ```text
---runs-dir PATH       Read another Jev run directory
---config PATH          Read and update another Jev config.json
+--runs-dir PATH       Read another run directory
+--config PATH         Read and update another config.json
 --port PORT           Use another localhost port
 --max-runs N          Limit history (default: 500)
 --include-content     Include full sanitized results in the API
 --open                Open the default browser
 ```
 
-## Install as a Codex skill
+### Dashboard security
 
-Copy the repository contents into the `jev-router` skill directory, or copy `SKILL.md`, `scripts/`, and `dashboard/` into an existing installation. The skill instructs the parent agent to ask `scripts/jev_effort.py` for an effort, echo its one-line decision to the user, dispatch the native subagent with that effort and no model override, then verify the result and disclose the inherited model and routed effort in its final response.
+- Binds only to loopback and refuses public binds.
+- Run history is read-only. The only write is `PUT /api/config` (`native_fallbacks` only), which requires a same-origin JSON request and replaces the file atomically.
+- Scrubs common API keys, bearer tokens, passwords, GitHub tokens and home-directory paths from displayed prompts and summaries.
+- No CDN assets, analytics, fonts or telemetry. Validates run IDs and report paths against directory traversal. Sends restrictive CSP, frame, MIME-sniffing, referrer and cache headers.
 
-On Windows, a typical destination is `%USERPROFILE%\.codex\skills\jev-router`.
-
-## Privacy and security
-
-- Binds only to loopback and refuses public/network binds.
-- Run history and reports remain read-only. Only `PUT /api/config` is writable; the only accepted field is `native_fallbacks`.
-- Config writes require same-origin JSON requests, validate the effort against Jev's configured levels, and use atomic file replacement.
-- Displays sanitized recorded task prompts in the local evidence diagram; common secret patterns and home-directory paths are redacted.
-- Truncates and scrubs common API keys, bearer tokens, passwords, secrets, GitHub tokens, and home-directory paths from displayed summaries.
-- Serves no CDN assets, analytics, fonts, or telemetry.
-- Validates run IDs and report paths to prevent directory traversal.
-- Sends restrictive CSP, frame, MIME-sniffing, referrer, and cache headers.
-
-Run records and prompts can still contain sensitive data on disk. Never commit `~/.config/jev-router/runs` or publish screenshots without reviewing them.
-
-## Test
-
-```bash
-python -m unittest discover -s tests -v
-```
+Run records contain full prompts on disk (up to 12,000 characters). Never commit `~/.config/jev-router/runs` or publish screenshots without reviewing them.
 
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
-# Effort routing
-
-Ask once per bounded task, then echo the line it prints:
-
-```bash
-python scripts/jev_effort.py "add a retry guard to the order submit path" --provider codex --json
-jev: effort=high (jev-1.13.0, 0.42s, conf 81%) - model unchanged
-```
-
-The cap is 1.0 second of wall clock, measured with a monotonic clock around a worker thread, so a slow DNS lookup or a hung socket cannot stall the task. Past the cap the decision is abandoned and your configured effort applies; `--json` then reports `route.fallback` with the reason instead of probabilities. The only text sent to TypeSafe is the bounded task description, truncated to `judge_context_chars`; file contents and credentials are never sent. The script exits 0 in every case and prints no model, because the model is inherited.
-
-The always-open lineage view and SVG dependency graph distinguish Jev recommendation, fallback/override, actual execution provider, requested model, observed model IDs, session IDs, and PID. A requested alias is never presented as an observed model. Missing historical originals/telemetry remain unrecorded; a legacy prompt.txt is read only when confined to its run directory. Prompt text is redacted for display, with explicit truncation notices for expanded/submitted text over 100,000 characters. SHA-256 describes the original stored submitted text, before display redaction.
