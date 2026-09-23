@@ -127,7 +127,8 @@ def write_record(result: dict[str, object], prompt: str, provider: str, session:
                 "provider": provider,
                 "model_evidence_source": "user_prompt_submit_hook",
                 "elapsed_seconds": result["elapsed_seconds"],
-                "result": f"effort {result['effort']} {outcome}; model inherited",
+                "result": (f"effort {result['effort']} {outcome}; model inherited" if result["effort"]
+                           else "not routed; the CLI's own effort level ran this prompt; model inherited"),
             },
         }],
     }
@@ -168,16 +169,19 @@ def main() -> int:
     applied = False
     if proxied:
         try:  # a fallback turn clears the file so a stale level never outlives its turn
-            applied = set_turn_effort(session, str(result["effort"]) if result["routed"] else None)
+            applied = set_turn_effort(session, str(result["effort"]) if result["effort"] else None)
         except OSError:
             applied = False
-    if applied:
+    if not result["effort"]:
+        # Jev failed and no default gear is set: route nothing, add no instruction; the CLI's own level runs the turn.
+        message = jev_effort.announce(result)
+    elif applied:
         message = f"{jev_effort.announce(result)} -> applied to this prompt"
     else:
         hint = APPLY_HINT.get(provider, "/effort {effort}").format(effort=result["effort"])
         message = f"{jev_effort.announce(result)} -> apply: {hint}"
     context = (f"Routed effort for this turn: {result['effort']} "
-               f"({'jev' if result['routed'] else 'your configured default'}). "
+               f"({'jev' if result['routed'] else 'your default gear'}). "
                f"{DEPTH.get(str(result['effort']), '')} "
                "The model is unchanged; do not propose switching it. "
                "This note is in English only for the model: reply in the language of the user's prompt.")
@@ -187,11 +191,10 @@ def main() -> int:
     except OSError:
         pass  # a record is evidence, not a precondition
 
-    print(json.dumps({
-        "continue": True,
-        "systemMessage": message,
-        "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": context},
-    }, ensure_ascii=False))
+    output: dict[str, object] = {"continue": True, "systemMessage": message}
+    if result["effort"]:
+        output["hookSpecificOutput"] = {"hookEventName": "UserPromptSubmit", "additionalContext": context}
+    print(json.dumps(output, ensure_ascii=False))
     return 0
 
 

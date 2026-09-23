@@ -123,7 +123,7 @@ python scripts/jev_dashboard.py --open   # http://127.0.0.1:8787
 
 ### Provider별 fallback effort
 
-**Default gear** 패널에서 Jev가 제시간에 답하지 못했을 때 provider별로 쓸 effort를 정합니다. provider마다 따로 저장되며, **Host's own setting**을 고르면 해당 값을 지웁니다. 선택지는 `efforts` 목록에서 가져옵니다.
+**Default gear** 패널에서 Jev가 답하지 못했을 때(시간 초과나 서버 오류) provider별로 쓸 effort를 정합니다. provider마다 따로 저장되며, **Host's own setting**을 고르면 해당 값을 지웁니다. 이 경우 Jev 호출이 실패하면 아무것도 라우팅하지 않습니다. 훅은 effort 지시를 추가하지 않고, CLI에 설정된 레벨 그대로 작업합니다. 선택지는 `efforts` 목록에서 가져옵니다.
 
 ```json
 {"native_fallbacks":{"codex":{"effort":"medium"},"claude":{"effort":null}}}

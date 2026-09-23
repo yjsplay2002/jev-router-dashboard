@@ -123,7 +123,7 @@ Engagement is never inferred without log evidence.
 
 ### Per-provider fallback effort
 
-The **Default gear** panel sets the effort each provider uses when Jev does not answer in time. Each provider is saved separately; **Host's own setting** clears one. Levels come from the `efforts` list.
+The **Default gear** panel sets the effort each provider uses when Jev does not answer (timeout or server error). Each provider is saved separately; **Host's own setting** clears one, and then a failed Jev call routes nothing: the hook adds no effort instruction and the CLI's own level runs the turn. Levels come from the `efforts` list.
 
 ```json
 {"native_fallbacks":{"codex":{"effort":"medium"},"claude":{"effort":null}}}

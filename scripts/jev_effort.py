@@ -75,13 +75,13 @@ def allowed_efforts(config: dict[str, object]) -> tuple[str, ...]:
     return DEFAULT_EFFORTS
 
 
-def configured_effort(config: dict[str, object], provider: str, efforts: tuple[str, ...]) -> str:
-    """The effort the user set for this provider; used whenever Jev does not answer in time."""
+def configured_effort(config: dict[str, object], provider: str, efforts: tuple[str, ...]) -> str | None:
+    """The default gear the user set for this provider, or None: then the host's own effort stands."""
     entry = (config.get("native_fallbacks") or {}).get(provider) if isinstance(config.get("native_fallbacks"), dict) else None
     effort = entry.get("effort") if isinstance(entry, dict) else None
     if isinstance(effort, str) and effort in efforts:
         return effort
-    return efforts[len(efforts) // 2] if efforts else DEFAULT_EFFORT
+    return None
 
 
 def ask_jev(state: str, efforts: tuple[str, ...], api_key: str, model: str, timeout: float) -> dict[str, object]:
@@ -137,7 +137,7 @@ def build(task: str, provider: str, config: dict[str, object], env: dict[str, st
     state = task[: limit if isinstance(limit, int) and limit > 0 else 12000]
 
     result: dict[str, object] = {
-        "effort": default, "effort_source": "user_setting", "routed": False,
+        "effort": default, "effort_source": "user_setting" if default else "host_setting", "routed": False,
         "reason": "", "elapsed_seconds": 0.0, "cap_seconds": timeout,
         "model_source": "inherited_parent_model", "router_model": "", "confidence": None,
         "probabilities": {}, "usage": {},
@@ -176,8 +176,9 @@ def announce(result: dict[str, object]) -> str:
         confidence = f", conf {round(float(confidence) * 100)}%" if isinstance(confidence, (int, float)) else ""
         return (f"jev: effort={result['effort']} ({result['router_model']}, "
                 f"{result['elapsed_seconds']:.2f}s{confidence}) - model unchanged")
-    return (f"jev: not routed ({result['reason']}) - effort={result['effort']} "
-            f"(your setting) - model unchanged")
+    level = (f"effort={result['effort']} (your default gear)" if result["effort"]
+             else "your CLI effort setting applies")
+    return f"jev: not routed ({result['reason']}) - {level} - model unchanged"
 
 
 def record(result: dict[str, object]) -> dict[str, object]:

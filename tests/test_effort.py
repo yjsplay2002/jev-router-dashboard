@@ -77,11 +77,13 @@ class EffortRouterTests(unittest.TestCase):
         self.assertEqual(no_key["reason"], "no TYPESAFE_API_KEY")
         self.assertEqual(no_key["effort"], "medium")
 
-    def test_unset_provider_effort_uses_the_middle_level_and_bad_choices_are_ignored(self):
+    def test_without_a_default_gear_a_failed_jev_leaves_the_cli_effort_alone(self):
         result = self.run_with(lambda *a, **k: {"answers": {"effort": {"choice": "extreme"}}}, provider="claude")
         self.assertFalse(result["routed"])
-        self.assertEqual(result["effort"], "medium")
+        self.assertIsNone(result["effort"])
+        self.assertEqual(result["effort_source"], "host_setting")
         self.assertEqual(result["reason"], "jev returned no usable effort")
+        self.assertIn("your CLI effort setting applies", effort.announce(result))
 
     def test_task_text_is_capped_by_judge_context_chars(self):
         seen = {}
@@ -194,9 +196,21 @@ class HookTests(unittest.TestCase):
             (self.home / ".env").write_text("", encoding="utf-8")  # Jev cannot answer: no stale level survives
             _, out, _ = self.invoke({"prompt": "next turn", "session_id": "abc-123"})
             self.assertFalse((self.home / "effort" / "abc-123").exists())
-            self.assertIn("apply: /effort", json.loads(out)["systemMessage"])
+            payload = json.loads(out)  # no default gear for claude: nothing is routed and no instruction is added
+            self.assertIn("your CLI effort setting applies", payload["systemMessage"])
+            self.assertNotIn("hookSpecificOutput", payload)
         finally:
             os.environ.pop("ANTHROPIC_BASE_URL")
+
+    def test_a_failed_jev_falls_back_to_an_explicit_default_gear_only(self):
+        sys.argv = ["hook", "codex"]
+        _, out, _ = self.invoke({"prompt": "rename a variable", "session_id": "s1"}, provider="codex", choice="extreme")
+        payload = json.loads(out)
+        self.assertIn("effort=medium (your default gear)", payload["systemMessage"])
+        self.assertIn("(your default gear)", payload["hookSpecificOutput"]["additionalContext"])
+        sys.argv = ["hook", "claude"]
+        _, out, _ = self.invoke({"prompt": "rename a variable", "session_id": "s2"}, choice="extreme")
+        self.assertNotIn("hookSpecificOutput", json.loads(out))
 
     def test_without_the_proxy_no_level_file_is_written(self):
         sys.argv = ["hook", "claude"]
