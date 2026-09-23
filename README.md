@@ -109,6 +109,8 @@ The dashboard is drawn as a gearbox shift gate: every prompt is a gear change, t
 - **Default gear:** the per-provider fallback effort, editable in place.
 - **Shift log:** one row per turn, expandable to the prompt and the evidence. Older delegated runs keep their `prompt → tasks → effort` evidence flow.
 
+Every model request that passes the proxy is logged with its model, the effort it left with and the effort the CLI asked for (never any prompt content), so each turn shows exactly which model ran at which effort level. Requests from before this logging existed show "not observed".
+
 Each turn is joined to the proxy's request log (`<router home>/effort/applied.log`) by session and time and labelled:
 
 | Label | Meaning |

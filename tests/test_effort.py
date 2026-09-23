@@ -246,6 +246,18 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(json.loads(self.proxy.rewrite(codex, "low", "reasoning"))["reasoning"],
                          {"effort": "low", "context": "all_turns"})
 
+    def test_every_model_request_is_logged_with_model_and_the_effort_it_left_with(self):
+        log = Path(os.environ["JEV_ROUTER_HOME"]) / "effort" / "applied.log"
+        before = json.dumps({"model": "claude-x", "output_config": {"effort": "medium"}}).encode()
+        after = self.proxy.rewrite(before, "high")
+        self.proxy.note_applied("sess-1-long", "high", before, after, "output_config")
+        self.proxy.note_applied("sess-1-long", None, before, before, "output_config")
+        rows = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual({k: rows[0][k] for k in ("session", "model", "effort", "from", "routed", "changed")},
+                         {"session": "sess-1-l", "model": "claude-x", "effort": "high", "from": "medium", "routed": True, "changed": True})
+        self.assertEqual((rows[1]["routed"], rows[1]["effort"], rows[1]["changed"]), (False, "medium", False))
+        self.assertNotIn("messages", log.read_text(encoding="utf-8"))  # never any prompt content
+
     def test_a_stream_is_framed_so_the_client_knows_where_the_body_ends(self):
         block = b"data: hi\n\n"
         self.assertEqual(self.proxy.chunk_block(block), b"A\r\n" + block + b"\r\n")

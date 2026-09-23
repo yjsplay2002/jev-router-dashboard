@@ -333,14 +333,18 @@ class DashboardTests(unittest.TestCase):
         ]
         t0 = 1790139600.0  # 2026-09-23T05:00:00Z
         log = [
-            {"t": t0 + 5, "session": "aaaaaaaa", "effort": "high", "changed": True},
-            {"t": t0 + 6, "session": "aaaaaaaa", "effort": "high", "changed": False},
+            {"t": t0 + 5, "session": "aaaaaaaa", "effort": "high", "changed": True, "model": "claude-x"},
+            {"t": t0 + 6, "session": "aaaaaaaa", "effort": "high", "changed": False, "model": "claude-x"},
+            {"t": t0 + 7, "session": "aaaaaaaa", "effort": "", "changed": False, "model": "claude-small", "routed": False},
             {"t": t0 + 65, "session": "aaaaaaaa", "effort": "low", "changed": True},
             {"t": t0 + 5, "session": "cccccccc", "effort": "low", "changed": True},
         ]
         out = {run["run_id"]: run for run in dashboard.attach_proxy_evidence(turns, log)}
-        self.assertEqual(out["20260923T050000Z-effort-aaaaaaaa"]["proxy"], {"requests": 2, "changed": 1, "efforts": {"high": 2}})
-        self.assertEqual(out["20260923T050100Z-effort-aaaaaaaa"]["proxy"], {"requests": 1, "changed": 1, "efforts": {"low": 1}})
+        first = out["20260923T050000Z-effort-aaaaaaaa"]["proxy"]
+        self.assertEqual((first["requests"], first["changed"], first["efforts"], first["seen"]), (2, 1, {"high": 2}, 3))
+        self.assertEqual(first["models"], {"claude-x|high": 2, "claude-small|-": 1})  # unrouted requests still name their model
+        second = out["20260923T050100Z-effort-aaaaaaaa"]["proxy"]
+        self.assertEqual((second["requests"], second["changed"], second["efforts"]), (1, 1, {"low": 1}))
         self.assertEqual(out["20260923T050000Z-effort-bbbbbbbb"]["proxy"]["requests"], 0)  # selected, never engaged
         self.assertNotIn("proxy", out["delegated-run"])
         self.assertNotIn("proxy", turns[0])  # cached records are never mutated
@@ -358,7 +362,8 @@ class DashboardTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "applied.log"
             path.write_text('{"t": 1, "session": "abcdef0123", "effort": "low", "changed": true}\nnot json\n{"t": 2}\n', encoding="utf-8")
-            self.assertEqual(dashboard.read_applied_log(path), [{"t": 1.0, "session": "abcdef01", "effort": "low", "changed": True}])
+            self.assertEqual(dashboard.read_applied_log(path), [{"t": 1.0, "session": "abcdef01", "effort": "low", "changed": True,
+                                                                  "routed": True, "model": "", "from": ""}])
             self.assertEqual(dashboard.read_applied_log(Path(temp) / "missing.log"), [])
 
 if __name__ == "__main__":

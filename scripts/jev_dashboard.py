@@ -222,7 +222,10 @@ def read_applied_log(path: Path, limit: int = 20000) -> list[dict[str, object]]:
             continue
         if isinstance(row, dict) and isinstance(row.get("session"), str) and isinstance(row.get("effort"), str):
             entries.append({"t": safe_number(row.get("t")), "session": row["session"][:8],
-                            "effort": scrub(row["effort"], 20), "changed": bool(row.get("changed"))})
+                            "effort": scrub(row["effort"], 20), "changed": bool(row.get("changed")),
+                            # lines written before the proxy logged every request were routed ones only
+                            "routed": row.get("routed", True) is not False,
+                            "model": scrub(row.get("model"), 80), "from": scrub(row.get("from"), 20)})
     return entries
 
 
@@ -249,12 +252,18 @@ def attach_proxy_evidence(runs: list[dict[str, object]], entries: list[dict[str,
                 owner = run
         if owner is None:
             continue
-        proof = counts.setdefault(id(owner), {"requests": 0, "changed": 0, "efforts": {}})
+        proof = counts.setdefault(id(owner), {"requests": 0, "changed": 0, "efforts": {}, "models": {}, "seen": 0})
+        proof["seen"] += 1  # every model request of the turn, routed or not
+        if entry.get("model"):
+            key = f'{entry["model"]}|{entry["effort"] or "-"}'  # which model ran at which effort, as sent
+            proof["models"][key] = proof["models"].get(key, 0) + 1
+        if not entry.get("routed", True):
+            continue
         proof["requests"] += 1
         proof["changed"] += int(bool(entry["changed"]))
         proof["efforts"][entry["effort"]] = proof["efforts"].get(entry["effort"], 0) + 1
     tracked = {id(run) for items in turns.values() for _, run in items}
-    empty = {"requests": 0, "changed": 0, "efforts": {}}
+    empty = {"requests": 0, "changed": 0, "efforts": {}, "models": {}, "seen": 0}
     # copies, never the cached records; a turn with no proxied request gets an explicit zero
     return [{**run, "proxy": counts.get(id(run), empty)} if id(run) in tracked else run for run in runs]
 

@@ -13,6 +13,16 @@ const secs = (n) => `${Number(n || 0).toFixed(2)}s`;
 // Jev calls cost fractions of a cent, so show significant digits rather than cents.
 const usd = (n) => { const v = Number(n || 0); return v === 0 ? "$0" : v >= 0.01 ? `$${v.toFixed(2)}` : `$${v.toPrecision(2)}`; };
 const cost = (run) => Number(run.router_cost_usd || 0);
+
+// Which model ran this turn and at which effort level, as the proxy saw the requests leave.
+function ranOn(run) {
+  const entries = Object.entries(run.proxy?.models || {}).map(([key, n]) => {
+    const [model, effort] = key.split("|");
+    return { model, effort: effort === "-" ? "" : effort, n };
+  }).sort((a, b) => (b.effort ? 1 : 0) - (a.effort ? 1 : 0) || b.n - a.n);
+  return { main: entries[0] || null, all: entries };
+}
+const modelLabel = (m) => m ? `${m.model}${m.effort ? ` @ ${m.effort}` : ""}` : "";
 const SVG = "http://www.w3.org/2000/svg";
 const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)");
 
@@ -43,7 +53,7 @@ function shift(run) {
   if (proxy.requests > 0) {
     const kept = proxy.requests - proxy.changed;
     return { kind: "engaged", gear: task.effort, task, proxy, label: `Engaged · ${proxy.requests} req`,
-             note: proxy.changed ? `${proxy.changed} shifted${kept ? `, ${kept} already there` : ""}` : "host was already in this gear" };
+             note: proxy.changed ? `${proxy.changed} changed${kept ? `, ${kept} already at this level` : ""}` : "host was already at this level" };
   }
   return { kind: "selected", gear: task.effort, task, proxy, label: "Selected, not engaged", note: "no request passed the proxy" };
 }
@@ -115,6 +125,7 @@ function drawPlate() {
   drawGate(run, info);
   if (!run) {
     $("gearName").textContent = "—";
+    $("runOn").textContent = "";
     $("engagement").dataset.state = "none";
     $("engagement").textContent = "No turn recorded yet. The hook writes one per prompt.";
     $("readoutFacts").replaceChildren(); $("readoutPrompt").textContent = ""; $("ratio").replaceChildren(); $("ratioLegend").textContent = "";
@@ -122,6 +133,8 @@ function drawPlate() {
   }
   const task = info.task;
   $("gearName").textContent = info.kind === "fallback" ? `N · ${info.gear || "default"}` : info.gear || "—";
+  const ran = ranOn(run).main;
+  $("runOn").textContent = ran ? `${ran.model} · effort ${ran.effort || "not sent"}` : (isTurn(run) ? "model not observed (no request passed the proxy)" : "");
   $("engagement").dataset.state = info.kind;
   $("engagement").innerHTML = `${escapeHtml(info.label)} <small>${escapeHtml(info.note)}</small>`;
   const facts = [
@@ -146,7 +159,7 @@ function drawPlate() {
 /* ── shift log rows ─────────────────────────────────── */
 function tiles(info) {
   if (info.kind === "delegated") return `<div class="tiles"><span class="tile is-on">${escapeHtml(info.gear || "—")}</span></div>`;
-  return `<div class="tiles" aria-label="${escapeHtml(info.kind === "fallback" ? `neutral, host default ${info.gear}` : `gear ${info.gear}`)}">${state.efforts.map(e =>
+  return `<div class="tiles" aria-label="${escapeHtml(info.kind === "fallback" ? `neutral, host default ${info.gear}` : `effort level ${info.gear}`)}">${state.efforts.map(e =>
     `<span class="tile${e === info.gear && info.kind !== "fallback" ? " is-on" : ""}${e === info.gear && info.kind === "fallback" ? " is-default" : ""}" aria-hidden="true">${short(e)}</span>`).join("")}</div>`;
 }
 
@@ -164,16 +177,17 @@ function evidenceFlowHtml(run) {
   const proxy = info.proxy || {};
   const facts = [
     ["Run", run.run_id], ["Host", run.origin_provider || "—"], ["Session", sessionOf(run) || "—"],
-    ["Chosen by", task.effort_source === "jev" ? "Jev" : "your default gear"],
+    ["Chosen by", task.effort_source === "jev" ? "Jev" : "your default effort level"],
     ["Jev latency", info.kind === "fallback" ? "—" : secs(task.elapsed_seconds)],
     ["Confidence", info.kind === "fallback" ? "—" : pct(task.confidence)],
     ["Jev tokens", `${fmt(run.router_usage?.input_tokens)} in · ${fmt(run.router_usage?.output_tokens)} out`],
     ["Jev cost", usd(cost(run))],
-    ["Proxied requests", fmt(proxy.requests)], ["Shifted by proxy", fmt(proxy.changed)],
-    ["Model", "inherited, never routed"],
+    ["Proxied requests", fmt(proxy.requests)], ["Changed by proxy", fmt(proxy.changed)],
+    ["Model · effort sent", ranOn(run).all.length ? ranOn(run).all.map(m => `${modelLabel(m)} ×${m.n}`).join(", ") : "not observed"],
+    ["Model routing", "inherited, never routed"],
   ];
-  const why = { engaged: "The proxy put this gear on every request of the turn it saw.",
-    selected: "Jev chose this gear, but no request of this turn passed the effort proxy, so the host ran its own setting. Point ANTHROPIC_BASE_URL (Claude) or the jev model provider (Codex) at the proxy to engage it.",
+  const why = { engaged: "The proxy put this effort level on every request of the turn it saw.",
+    selected: "Jev chose this effort level, but no request of this turn passed the effort proxy, so the host ran its own setting. Point ANTHROPIC_BASE_URL (Claude) or the jev model provider (Codex) at the proxy to engage it.",
     fallback: `Jev did not answer in time (${task.fallback_reason || "reason not recorded"}). The proxy left the requests alone and the host's own effort ran.` }[info.kind];
   return `<div><h3>Prompt</h3><pre>${escapeHtml(run.user_prompt || "Not recorded.")}</pre><p class="note">${escapeHtml(why)}</p></div>
     <div><h3>Evidence</h3><dl class="facts">${facts.map(([k, v]) => `<dt>${k}</dt><dd>${escapeHtml(v)}</dd>`).join("")}</dl>${barsHtml(task.probabilities, task.effort)}</div>`;
@@ -188,7 +202,7 @@ function rowSummary(run) {
   const prompt = run.user_prompt || task.title || run.run_id;
   return `<span class="t-time"><b>${t.time}</b>${t.day}</span>${tiles(info)}
     <span class="state" data-state="${info.kind}"><span>${escapeHtml(info.label)}<br><small>${escapeHtml(info.note)}</small></span></span>
-    <span class="t-host">${escapeHtml(host || "—")}<code>${escapeHtml(sessionOf(run) || run.run_id.slice(-12))}</code></span>
+    <span class="t-host"><b>${escapeHtml(ranOn(run).main?.model || "not observed")}</b><code>${escapeHtml(host || "—")} · ${escapeHtml(sessionOf(run) || run.run_id.slice(-12))}</code></span>
     <span class="t-jev">${jev}</span><span class="t-prompt" title="${escapeHtml(prompt.slice(0, 400))}">${escapeHtml(prompt)}</span>`;
 }
 
@@ -206,7 +220,7 @@ function updateRow(row, run) {
   row.dataset.kind = info.kind;
   row.dataset.provider = (isTurn(run) ? run.origin_provider : info.task.execution_provider || run.origin_provider) || "";
   row.dataset.signature = `${run.source_mtime}|${JSON.stringify(run.proxy || {})}`;
-  row.dataset.search = [run.user_prompt, run.run_id, run.origin_provider, info.gear, info.label, info.note].join(" ").toLowerCase();
+  row.dataset.search = [run.user_prompt, run.run_id, run.origin_provider, info.gear, info.label, info.note, ...ranOn(run).all.map(m => m.model)].join(" ").toLowerCase();
   row.querySelector("summary").innerHTML = rowSummary(run);
   row.querySelector(".shift-body").innerHTML = evidenceFlowHtml(run);
 }
@@ -316,7 +330,7 @@ async function loadHealth(signal) {
   if (price) $("spend").title = `List price: $${price.input}/M input tokens, $${price.output}/M output tokens. Cost is computed from the tokens each run recorded.`;
   const up = health.proxy?.listening;
   $("linkage").dataset.state = up ? "up" : "down";
-  $("linkageText").textContent = up ? `Effort proxy :${health.proxy.port} engaged` : `Effort proxy :${health.proxy?.port ?? 8791} down — gears are selected, not engaged`;
+  $("linkageText").textContent = up ? `Effort proxy :${health.proxy.port} engaged` : `Effort proxy :${health.proxy?.port ?? 8791} down — effort levels are selected, not engaged`;
 }
 
 /* ── default gears (native fallbacks) ───────────────── */
@@ -352,7 +366,7 @@ function renderNativeConfig(config) {
 
 async function loadNativeConfig() {
   if (nativeState.current && JSON.stringify(nativePayload()) !== JSON.stringify(nativeState.current)) {
-    setTone("nativeSettingsMessage", "Save your changed default gears before reloading.", "pending");
+    setTone("nativeSettingsMessage", "Save your changed default levels before reloading.", "pending");
     return;
   }
   nativeState.busy = true;
@@ -374,7 +388,7 @@ async function saveNativeConfig(event) {
   setTone("nativeSettingsState", "Saving…", "pending");
   try {
     renderNativeConfig(await fetchJson("/api/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(nativePayload()) }));
-    setTone("nativeSettingsMessage", "Default gears saved. They apply whenever Jev misses the 1s cap.", "ready");
+    setTone("nativeSettingsMessage", "Default effort levels saved. They apply whenever Jev misses the 1s cap.", "ready");
   } catch (error) {
     nativeState.busy = false;
     updateNativeState();

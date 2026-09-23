@@ -62,10 +62,30 @@ def rewrite(body: bytes, level: str | None, field: str = "output_config") -> byt
     return json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
-def note_applied(session: str, level: str, changed: bool) -> None:
-    """Evidence that a request left with the routed level; no prompt content is ever written."""
+def model_and_effort(body: bytes, field: str) -> tuple[str, str]:
+    """The model and effort a request carries; ("", "") when the body is not a JSON object."""
+    try:
+        request = json.loads(body)
+    except ValueError:
+        return "", ""
+    if not isinstance(request, dict):
+        return "", ""
+    config = request.get(field)
+    effort = config.get("effort") if isinstance(config, dict) else None
+    model = request.get("model")
+    return (model if isinstance(model, str) else "")[:80], (effort if isinstance(effort, str) else "")[:20]
+
+
+def note_applied(session: str, level: str | None, before: bytes, after: bytes, field: str) -> None:
+    """Evidence of what each model request left with; no prompt content is ever written.
+
+    `effort` is what was sent, `from` what the CLI asked for, `routed` whether the hook's level applied.
+    """
     # ponytail: append-only log, rotate if it ever grows large enough to matter
-    line = json.dumps({"t": round(time.time(), 3), "session": session[:8], "effort": level, "changed": changed})
+    model, sent = model_and_effort(after, field)
+    asked = model_and_effort(before, field)[1] if after is not before else sent
+    line = json.dumps({"t": round(time.time(), 3), "session": session[:8], "model": model, "effort": sent,
+                       "from": asked, "routed": level is not None, "changed": after is not before})
     try:
         with (jev_effort.router_home() / "effort" / "applied.log").open("a", encoding="utf-8") as log:
             log.write(line + "\n")
@@ -122,8 +142,8 @@ class Handler(BaseHTTPRequestHandler):
                 session = self.headers.get(session_header, "")
                 level = routed_effort(session)
                 new_body = rewrite(body, level, field)
-                if level is not None:
-                    note_applied(session, level, changed=new_body is not body)
+                if session:
+                    note_applied(session, level, body, new_body, field)
                 body = new_body
             # ponytail: one upstream TLS connection per request; pool connections if the handshake shows up in latency
             upstream = http.client.HTTPSConnection(host, timeout=900)

@@ -29,20 +29,21 @@
         <svg id="gate" class="gate" role="img" aria-labelledby="gateLabel" viewBox="0 0 360 220"><title id="gateLabel">Shift gate</title></svg>
       </div>
       <div class="readout" id="readout">
-        <h2 id="plateTitle" class="readout-title">Last turn</h2>
+        <h2 id="plateTitle" class="readout-title">Last turn · effort level</h2>
         <p class="gear-name" id="gearName">—</p>
+        <p class="run-on" id="runOn"></p>
         <p class="engagement" id="engagement" data-state="none">No turn recorded yet</p>
         <dl class="readout-facts" id="readoutFacts"></dl>
         <p class="readout-prompt" id="readoutPrompt"></p>
         <svg class="ratio" id="ratio" viewBox="0 0 300 10" preserveAspectRatio="none" aria-hidden="true"></svg>
         <p class="ratio-legend" id="ratioLegend"></p>
       </div>
-      <p class="plate-foot">The model is never shifted. Claude keeps the prompt cache warm across gear changes; on Codex the first turn in a gear not used recently misses the cache (measured 2026-09-23).</p>
+      <p class="plate-foot">The model is never changed; only its effort level is. Claude keeps the prompt cache warm across effort-level changes; on Codex the first turn at a level the session has not used yet misses the cache (measured 2026-09-23).</p>
     </section>
 
     <section class="defaults" aria-labelledby="defaultsTitle">
       <div class="defaults-head">
-        <h2 id="defaultsTitle">Default gear</h2>
+        <h2 id="defaultsTitle">Default effort level</h2>
         <p>Used when Jev does not answer within the 1&nbsp;second cap. The proxy then leaves the request alone and the host's own setting runs.</p>
         <span class="settings-state" id="nativeSettingsState" data-tone="pending">Loading…</span>
       </div>
@@ -50,7 +51,7 @@
         <label class="provider" for="nativeEffort-claude"><span>Claude</span><select id="nativeEffort-claude" name="claude" disabled></select></label>
         <label class="provider" for="nativeEffort-codex"><span>Codex</span><select id="nativeEffort-codex" name="codex" disabled></select></label>
         <div class="defaults-actions">
-          <button id="saveNativeSettings" class="btn btn-primary" type="submit" disabled>Save default gears</button>
+          <button id="saveNativeSettings" class="btn btn-primary" type="submit" disabled>Save default levels</button>
           <button id="reloadNativeSettings" class="btn" type="button">Reload levels</button>
         </div>
       </form>
@@ -65,12 +66,12 @@
         <svg class="spread" id="spread" viewBox="0 0 300 8" preserveAspectRatio="none" aria-hidden="true"></svg>
       </div>
       <div class="toolbar">
-        <input id="search" type="search" placeholder="Search prompt, session, provider, gear…" aria-label="Search the shift log">
+        <input id="search" type="search" placeholder="Search prompt, session, model, effort level…" aria-label="Search the shift log">
         <select id="provider" aria-label="Filter by provider"><option value="">All providers</option></select>
         <select id="status" aria-label="Filter by engagement"><option value="">Every turn</option><option value="engaged">Engaged</option><option value="selected">Selected, not engaged</option><option value="fallback">Fallback</option><option value="delegated">Delegated runs</option></select>
         <button id="refresh" class="btn" type="button">Refresh</button>
       </div>
-      <div class="log-cols" aria-hidden="true"><span>Time</span><span>Gear</span><span>Engagement</span><span>Host</span><span>Jev · cost</span><span>Prompt</span></div>
+      <div class="log-cols" aria-hidden="true"><span>Time</span><span>Effort level</span><span>Engagement</span><span>Model</span><span>Jev · cost</span><span>Prompt</span></div>
       <p id="error" class="error" role="alert" hidden></p>
       <div id="runs" class="runs"></div>
       <p id="announce" class="sr-only" aria-live="polite"></p>
