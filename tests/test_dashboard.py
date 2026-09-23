@@ -315,21 +315,47 @@ class DashboardTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=2)
 
-    def test_dashboard_is_always_open_and_polling_does_not_overlap(self):
+    def test_dashboard_markup_keeps_its_contracts(self):
         markup = (ROOT / "dashboard" / "index.html").read_text(encoding="utf-8")
         script = (ROOT / "dashboard" / "app.js").read_text(encoding="utf-8")
-        self.assertNotIn("aria-expanded", markup)
-        self.assertNotIn('class="run-body" hidden', markup)
         self.assertNotIn("setInterval(", script)
         self.assertIn("if (poll.inflight)", script)
         self.assertIn('id="nativeSettingsForm"', markup)
-        self.assertNotIn("Legacy CLI fallback policy", markup)
         self.assertIn('id="nativeEffort-codex"', markup)
         self.assertNotIn("nativeModel-", markup)
         self.assertIn('method: "PUT"', script)
         self.assertIn("function evidenceFlowHtml", script)
         self.assertIn("value > 1 ? value / 100 : value", script)
+        self.assertIn('id="gate"', markup)
+        self.assertNotIn(" style=", markup + script)  # CSP style-src 'self' forbids inline style attributes
 
+    def test_proxy_log_is_attached_to_the_turn_it_followed(self):
+        turns = [
+            {"run_id": "20260923T050000Z-effort-aaaaaaaa", "mode": "turn_effort", "started_at": "2026-09-23T05:00:00+00:00", "tasks": []},
+            {"run_id": "20260923T050100Z-effort-aaaaaaaa", "mode": "turn_effort", "started_at": "2026-09-23T05:01:00+00:00", "tasks": []},
+            {"run_id": "20260923T050000Z-effort-bbbbbbbb", "mode": "turn_effort", "started_at": "2026-09-23T05:00:00+00:00", "tasks": []},
+            {"run_id": "delegated-run", "mode": "native", "started_at": "2026-09-23T05:00:00+00:00", "tasks": []},
+        ]
+        t0 = 1790139600.0  # 2026-09-23T05:00:00Z
+        log = [
+            {"t": t0 + 5, "session": "aaaaaaaa", "effort": "high", "changed": True},
+            {"t": t0 + 6, "session": "aaaaaaaa", "effort": "high", "changed": False},
+            {"t": t0 + 65, "session": "aaaaaaaa", "effort": "low", "changed": True},
+            {"t": t0 + 5, "session": "cccccccc", "effort": "low", "changed": True},
+        ]
+        out = {run["run_id"]: run for run in dashboard.attach_proxy_evidence(turns, log)}
+        self.assertEqual(out["20260923T050000Z-effort-aaaaaaaa"]["proxy"], {"requests": 2, "changed": 1, "efforts": {"high": 2}})
+        self.assertEqual(out["20260923T050100Z-effort-aaaaaaaa"]["proxy"], {"requests": 1, "changed": 1, "efforts": {"low": 1}})
+        self.assertEqual(out["20260923T050000Z-effort-bbbbbbbb"]["proxy"]["requests"], 0)  # selected, never engaged
+        self.assertNotIn("proxy", out["delegated-run"])
+        self.assertNotIn("proxy", turns[0])  # cached records are never mutated
+
+    def test_applied_log_skips_malformed_lines(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "applied.log"
+            path.write_text('{"t": 1, "session": "abcdef0123", "effort": "low", "changed": true}\nnot json\n{"t": 2}\n', encoding="utf-8")
+            self.assertEqual(dashboard.read_applied_log(path), [{"t": 1.0, "session": "abcdef01", "effort": "low", "changed": True}])
+            self.assertEqual(dashboard.read_applied_log(Path(temp) / "missing.log"), [])
 
 if __name__ == "__main__":
     unittest.main()

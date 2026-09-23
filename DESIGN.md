@@ -1,169 +1,108 @@
 ---
 name: Jev Router Dashboard
-description: A calibrated decision ledger for local routing evidence.
+description: A gearbox shift gate for per-turn effort routing.
 colors:
-  registration-blue: "#1859d1"
-  paper: "#f4f2ec"
-  surface: "#ffffff"
-  ink: "#17191d"
-  muted-ink: "#666d78"
-  rule: "#ccd1d8"
-  exception-coral: "#e54b3f"
-  success-green: "#1c795b"
-  pending-amber: "#aa6500"
+  ground: "#dde0e4"
+  surface: "#eceef1"
+  ink: "#15181c"
+  ink-2: "#4a515b"
+  rule: "#b6bcc5"
+  plate: "#1e2227"
+  plate-edge: "#0d0f12"
+  plate-ink: "#eceff2"
+  plate-ink-2: "#a1a9b3"
+  slot: "#0c0e11"
+  knob: "#efe9dc"
+  engaged: "#2e9d5a"
+  engaged-ink: "#186b3a"
+  engaged-lamp: "#4fd07f"
+  selected: "#c9861b"
+  selected-ink: "#8a5600"
+  selected-lamp: "#f0b13a"
+  neutral: "#8a929c"
+  focus: "#1f5fbf"
+  error: "#b3261e"
+  dark-ground: "#121418"
+  dark-surface: "#1a1d22"
+  dark-ink: "#e7eaee"
+  dark-ink-2: "#9ba3ad"
+  dark-rule: "#2e333a"
+  dark-plate: "#0b0d10"
+  dark-engaged-ink: "#57cf85"
+  dark-focus: "#7aa7ff"
 typography:
   display:
-    fontFamily: "Bahnschrift SemiCondensed, Arial Narrow, Aptos Narrow, sans-serif"
-    fontSize: "clamp(40px, 7vw, 78px)"
+    fontFamily: "Barlow Condensed (self-hosted, OFL), Bahnschrift SemiCondensed, Arial Narrow, sans-serif"
     fontWeight: 700
-    lineHeight: 0.86
-    letterSpacing: "-0.04em"
+    textTransform: uppercase
+  label:
+    fontFamily: "Barlow Condensed"
+    fontSize: "12px"
+    fontWeight: 500
+    letterSpacing: "0.14em"
   body:
-    fontFamily: "Bahnschrift SemiCondensed, Arial Narrow, Aptos Narrow, sans-serif"
-    fontSize: "16px"
-    fontWeight: 400
-    lineHeight: 1.4
+    fontFamily: "system-ui, -apple-system, Segoe UI, sans-serif"
+    fontSize: "15px"
+    lineHeight: 1.45
   data:
-    fontFamily: "ui-monospace, monospace"
+    fontFamily: "ui-monospace, Cascadia Mono, Consolas, monospace"
     fontSize: "13px"
-    fontWeight: 700
 rounded:
-  control: "4px"
-  record: "6px"
-  pill: "999px"
+  tile: "3px"
+  control: "5px"
+  panel: "8px"
+  plate: "10px"
 spacing:
-  compact: "8px"
-  standard: "16px"
-  section: "28px"
-components:
-  button-primary:
-    backgroundColor: "{colors.ink}"
-    textColor: "{colors.surface}"
-    rounded: "{rounded.control}"
-    padding: "11px 13px"
-  record:
-    backgroundColor: "{colors.surface}"
-    textColor: "{colors.ink}"
-    rounded: "{rounded.record}"
-    padding: "14px 16px"
+  tight: "8px"
+  standard: "14px"
+  section: "34px"
 ---
 
 # Design System: Jev Router Dashboard
 
 ## Overview
 
-**Creative North Star: "The Calibrated Decision Ledger"**
+**North Star: "The Shift Gate."** Every prompt is a gear change. The hook *selects* a gear; the effort proxy *engages* it on the real request. The dashboard exists to show, per turn, which gear ran and whether it was actually engaged. It refuses the stat-card grid and the generic run-card feed.
 
-The interface treats routing history as operational evidence laid onto a precise work surface. A single blue trace rail makes chronology tangible, while restrained rules and tabular data keep dense records scannable. Status color is sparse and always paired with text.
-
-**Key Characteristics:**
-
-- Continuous routing rail instead of a generic card grid.
-- Paper, ink, and registration-blue construction.
-- Compact evidence-first density with generous section breaks.
-- Exception colors reserved for meaningful state.
+Physical scene: a developer at a workstation beside a terminal, in ordinary room light. The surface is light machined aluminum with one dark instrument (the gate plate); dark mode follows the OS and keeps the same roles.
 
 ## Colors
 
-Registration blue carries topology and interaction; paper and graphite carry almost everything else.
+Restrained: neutrals plus three signal lamps. Color only ever means state, and every state also has words.
 
-### Primary
-
-- **Registration Blue:** Connects the routing rail, probability bars, focus rings, and links.
-
-### Secondary
-
-- **Exception Coral:** Marks failed or unreadable records.
-- **Success Green:** Marks completed records and localhost health.
-- **Pending Amber:** Marks incomplete or indeterminate records.
-
-### Neutral
-
-- **Paper:** The workstation canvas.
-- **Surface:** Run records and form controls.
-- **Ink:** Primary type and decisive controls.
-- **Muted Ink:** Paths, timestamps, labels, and secondary evidence.
-- **Rule:** Boundaries and tabular separation.
-
-**The Registration Rule.** Blue describes routing structure or interaction; it is not decorative fill.
+- **Ground / Surface / Rule / Ink:** Machined-aluminum grey with a fine horizontal grain (a 1px repeating line, never a gradient wash). Surface lifts panels; rules separate rows.
+- **Plate:** The only dark region. Graphite, four machine screws, an engraved H-pattern gate cut in `slot` black, a bone `knob`.
+- **Engaged (green):** The proxy put this gear on the turn's requests. On the plate it glows (`engaged-lamp`); in the log it is `engaged-ink`.
+- **Selected (amber):** Jev chose a gear but no request of that turn passed the proxy. The knob turns hollow with an amber ring.
+- **Neutral (grey N):** Fallback. Jev did not answer in time; the host's own setting ran. The knob sits in neutral and a dashed ghost ring marks the host default.
+- **Focus blue:** Keyboard focus only.
 
 ## Typography
 
-**Display Font:** Bahnschrift SemiCondensed with narrow system fallbacks
-
-**Body Font:** The same condensed workhorse family
-
-**Data Font:** The platform monospace stack
-
-**Character:** Condensed lettering keeps operational density legible. Monospace is reserved for run IDs, filesystem paths, and numeric evidence.
-
-### Hierarchy
-
-- **Display:** Heavy, tightly tracked, and used once for the product title.
-- **Title:** Compact task headings around 21px.
-- **Body:** Narrow sans at normal reading size.
-- **Label:** Small uppercase labels with expanded tracking for telemetry keys.
-- **Data:** Monospace for identifiers, paths, timing, and token counts only.
-
-**The Evidence Type Rule.** Use monospace only when character alignment or machine identity carries meaning.
+- **Display:** Barlow Condensed 700, uppercase, self-hosted from `dashboard/fonts/` (SIL OFL). Gear names, section titles, button labels. The gear name on the plate is the one large moment (56–96px).
+- **Label:** Barlow Condensed 500, 12px, tracked 0.14em, uppercase. Column heads and fact keys.
+- **Body:** System UI sans for prose and prompts.
+- **Data:** Monospace only for session ids, paths, timings, percentages.
 
 ## Layout
 
-Content sits in a centered 1180px maximum-width work area. Aggregate telemetry forms one ruled strip, not a collection of floating cards. Runs follow a vertical chronological rail with short registration ticks. At 760px, telemetry and route facts collapse to two columns, timestamps yield to run identity, and the rail stays visible.
-
-## Elevation & Depth
-
-The system is intentionally flat. Hierarchy comes from paper/surface contrast, 1px rules, and the trace rail rather than shadows or simulated materials.
-
-**The Flat Evidence Rule.** Routing records never float; they register against the shared rail.
-
-## Shapes
-
-Controls use a restrained 4px radius and records use 6px. Pills are reserved for compact state or scope indicators such as “localhost only.” Probability bars and rules remain square.
+1240px max width. First viewport: top bar (wordmark, runs path, proxy linkage lamp), the full-width gate plate (gate left, last-turn readout right), then the default-gear form. Below: the shift log, a ruled list whose rows expand in place (`<details>`). Under 1000px the log row stacks; under 760px the plate stacks and the gate caps at 340px. No horizontal scroll at 390px.
 
 ## Components
 
-### Buttons
+- **Gate plate:** SVG gate drawn from the configured `efforts` list: slots alternate up/down along one rail; neutral sits on the rail between the first two slots. Readout: gear name, engagement lamp line, host/session/when/Jev facts, prompt excerpt (two lines), probability ratio bar with a mono legend, and a footnote stating the measured cache behavior.
+- **Gear tiles:** The gate read flat in a log row: one 26px tile per level; the engaged or selected gear is filled ink; a fallback's host default is dashed.
+- **Engagement label:** Lamp dot + uppercase state + a sans note (`6 shifted`, `no request passed the proxy`, the fallback reason).
+- **Default gear form:** One native `<select>` per provider; "Host's own setting" clears it. Primary button is ink and turns engaged-green on hover.
+- **Probability bars:** SVG geometry (never inline styles, CSP `style-src 'self'`); the chosen level is ink, the rest muted.
 
-- **Shape:** Compact rectangular control with a 4px radius.
-- **Primary:** Ink background, white label, and 11px by 13px padding.
-- **Focus:** A visible 3px registration-blue outline with separation from the control.
+## Motion
 
-### Cards / Containers
+One authored moment: when a new turn arrives, the knob leaves its old slot, runs the rail, drops into the new slot, overshoots 6px and settles (700ms, Web Animations API). Everything else is a 150–180ms color or rotation transition. `prefers-reduced-motion` places the knob instantly and removes transitions.
 
-- **Corner Style:** Slightly curved record corners at 6px.
-- **Background:** White surface against paper.
-- **Shadow Strategy:** None.
-- **Border:** One neutral rule, changing to registration blue on hover.
-- **Internal Padding:** 14–18px depending on density.
+## Rules
 
-### Inputs / Fields
-
-- **Style:** White field, 1px neutral rule, and 4px corners.
-- **Focus:** The same explicit blue focus ring as buttons.
-
-### Provider fallback effort panel
-
-- **Rows:** Codex, Claude, and Grok each keep an independent fallback-effort row.
-- **Empty state and feedback:** An empty effort leaves fallback handling with the parent. Saving and reloading report the current state.
-- **Responsive behavior:** Below 600px, each row stacks its field and controls.
-
-### Routing Rail
-
-Each run attaches to one persistent 1px blue rail. Every record is fully expanded by default; there is no per-run disclosure control. Status dots encode state at the record level, probability bars reuse the rail color, and live updates insert new records without moving the reader's viewport once they have scrolled into the ledger.
-
-## Do's and Don'ts
-
-### Do:
-
-- **Do** preserve the continuous routing rail across responsive layouts.
-- **Do** pair every state color with a readable status label.
-- **Do** keep identifiers and measurement data typographically distinct from prose.
-- **Do** use rules and alignment to create hierarchy.
-
-### Don't:
-
-- **Don't** replace the ledger with a same-size metric-card grid.
-- **Don't** introduce gradients, glow, glass, or decorative shadows.
-- **Don't** use blue as general decoration; it must carry topology or interaction.
-- **Don't** expose full prompt content by default.
+- Never present a model change: the model is inherited and the UI says so.
+- Never claim engagement without proxy log evidence; a turn with zero proxied requests is "Selected, not engaged".
+- State is never color-only.
+- No inline style attributes; widths are SVG geometry.

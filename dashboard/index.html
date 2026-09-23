@@ -3,72 +3,80 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Jev Router Dashboard</title>
+  <meta name="color-scheme" content="light dark">
+  <title>Jev Router</title>
+  <link rel="preload" href="/static/fonts/barlow-condensed-700.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <!--
-  THESIS: Routing history reads as a calibrated decision ledger, not a generic card dashboard.
-  OWN-WORLD: Paper-white work surface, graphite type, cobalt registration rules, and coral exception marks.
-  STORY: Verify aggregate health, set each provider's fallback effort, then read the complete live decision ledger.
-  FIRST VIEWPORT: Product title and privacy state lead; telemetry and an always-open policy workbench precede the live decision rail.
-  FORM: Router trace ledger, assigned direction 7, seed d45f7a32.
+  THESIS: Every prompt is a gear change: the hook selects a gear, the proxy engages it on the real request. Refuses the stat-card grid and the generic run-card feed.
+  OWN-WORLD: Machined aluminum ground, one graphite gate plate with an engraved H-pattern and a bone knob; shift-light green means engaged, amber means selected but not engaged, grey N means fallback. Barlow Condensed caps for gears and labels, system sans for prose, mono only for ids and numbers.
+  STORY: See the gear the last prompt actually ran in, set the default gear per provider, then scan the shift log for turns that were not engaged.
+  FIRST VIEWPORT: Gate plate spans the width: gate diagram left, last-turn readout right; proxy linkage state in the top bar; default gears directly under the plate.
+  FORM: Gearbox shift gate, 5 of 7, seed c9ac458b.
   FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
   -->
+  <header class="bar">
+    <h1 class="wordmark">Jev Router</h1>
+    <p class="bar-sub" id="subtitle">Reading shift log…</p>
+    <p class="linkage" id="linkage" data-state="unknown"><svg class="lamp" viewBox="0 0 10 10" aria-hidden="true"><circle cx="5" cy="5" r="4"/></svg><span id="linkageText">Checking effort proxy…</span></p>
+  </header>
+
   <main>
-    <header>
-      <div><h1>Jev Router</h1><p class="deck">Every routing decision, on the record.</p><p id="subtitle">Loading recorded decisions…</p></div>
-      <div class="live"><span></span> localhost only</div>
-    </header>
-    <section class="stats" aria-label="Run summary">
-      <article><small>RUNS</small><strong id="runCount">—</strong></article>
-      <article><small>TASKS</small><strong id="taskCount">—</strong></article>
-      <article><small>SUCCESS RATE</small><strong id="successRate">—</strong></article>
-      <article><small>ROUTER TOKENS</small><strong id="tokenCount">—</strong></article>
-    </section>
-    <section class="settings native-settings" aria-labelledby="nativeSettingsTitle">
-      <div class="settings-intro">
-        <div>
-          <h2 id="nativeSettingsTitle">Provider fallback effort</h2>
-          <p>Jev routes the reasoning effort; the parent's model is always inherited unchanged. These levels apply whenever Jev does not answer within the 1 second cap.</p>
-        </div>
-        <span class="settings-state" id="nativeSettingsState">Loading defaults...</span>
+    <section class="plate" aria-labelledby="plateTitle">
+      <div class="gate-wrap">
+        <svg id="gate" class="gate" role="img" aria-labelledby="gateLabel" viewBox="0 0 360 220"><title id="gateLabel">Shift gate</title></svg>
       </div>
-      <form id="nativeSettingsForm" class="native-defaults">
-        <div class="native-default-row">
-          <label for="nativeEffort-codex">Codex</label>
-          <div class="native-model-control"><select id="nativeEffort-codex" name="codex" aria-describedby="nativeNote-codex" disabled></select><p id="nativeNote-codex" class="settings-note">Loading effort options...</p></div>
+      <div class="readout" id="readout">
+        <h2 id="plateTitle" class="readout-title">Last turn</h2>
+        <p class="gear-name" id="gearName">—</p>
+        <p class="engagement" id="engagement" data-state="none">No turn recorded yet</p>
+        <dl class="readout-facts" id="readoutFacts"></dl>
+        <p class="readout-prompt" id="readoutPrompt"></p>
+        <svg class="ratio" id="ratio" viewBox="0 0 300 10" preserveAspectRatio="none" aria-hidden="true"></svg>
+        <p class="ratio-legend" id="ratioLegend"></p>
+      </div>
+      <p class="plate-foot">The model is never shifted. Claude keeps the prompt cache warm across gear changes; on Codex the first turn in a gear not used recently misses the cache (measured 2026-09-23).</p>
+    </section>
+
+    <section class="defaults" aria-labelledby="defaultsTitle">
+      <div class="defaults-head">
+        <h2 id="defaultsTitle">Default gear</h2>
+        <p>Used when Jev does not answer within the 1&nbsp;second cap. The proxy then leaves the request alone and the host's own setting runs.</p>
+        <span class="settings-state" id="nativeSettingsState" data-tone="pending">Loading…</span>
+      </div>
+      <form id="nativeSettingsForm" class="defaults-form">
+        <label class="provider" for="nativeEffort-claude"><span>Claude</span><select id="nativeEffort-claude" name="claude" disabled></select></label>
+        <label class="provider" for="nativeEffort-codex"><span>Codex</span><select id="nativeEffort-codex" name="codex" disabled></select></label>
+        <label class="provider" for="nativeEffort-grok"><span>Grok</span><select id="nativeEffort-grok" name="grok" disabled></select></label>
+        <div class="defaults-actions">
+          <button id="saveNativeSettings" class="btn btn-primary" type="submit" disabled>Save default gears</button>
+          <button id="reloadNativeSettings" class="btn" type="button">Reload levels</button>
         </div>
-        <div class="native-default-row">
-          <label for="nativeEffort-claude">Claude</label>
-          <div class="native-model-control"><select id="nativeEffort-claude" name="claude" aria-describedby="nativeNote-claude" disabled></select><p id="nativeNote-claude" class="settings-note">Loading effort options...</p></div>
-        </div>
-        <div class="native-default-row">
-          <label for="nativeEffort-grok">Grok</label>
-          <div class="native-model-control"><select id="nativeEffort-grok" name="grok" aria-describedby="nativeNote-grok" disabled></select><p id="nativeNote-grok" class="settings-note">Loading effort options...</p></div>
-        </div>
-        <div class="native-actions"><button id="saveNativeSettings" type="submit" disabled>Save provider defaults</button><button id="reloadNativeSettings" type="button">Reload effort options</button></div>
       </form>
-      <p class="settings-note">Levels come from Jev's own <code>efforts</code> list. A host with no effort parameter records that it was unsupported. An unset level leaves the fallback choice with the parent.</p>
       <p id="nativeSettingsMessage" class="settings-message" role="status" aria-live="polite"></p>
     </section>
-    <section class="toolbar">
-      <input id="search" type="search" placeholder="Search run, task, provider, effort…" aria-label="Search">
-      <select id="status" aria-label="Filter status"><option value="">All statuses</option></select>
-      <button id="refresh" type="button">Refresh</button>
-    </section>
-    <p id="error" class="error" hidden></p>
-    <p id="announce" class="sr-only" aria-live="polite"></p>
-    <section id="runs" class="run-list"></section>
-  </main>
-  <template id="runTemplate">
-    <article class="run-card">
-      <div class="run-head">
-        <span class="status-dot"></span><span class="run-title"></span><span class="run-time"></span>
+
+    <section class="log" aria-labelledby="logTitle">
+      <div class="log-head">
+        <h2 id="logTitle">Shift log</h2>
+        <p class="tally" id="tally"></p>
+        <svg class="spread" id="spread" viewBox="0 0 300 8" preserveAspectRatio="none" aria-hidden="true"></svg>
       </div>
-      <div class="run-body"></div>
-    </article>
-  </template>
+      <div class="toolbar">
+        <input id="search" type="search" placeholder="Search prompt, session, provider, gear…" aria-label="Search the shift log">
+        <select id="provider" aria-label="Filter by provider"><option value="">All providers</option></select>
+        <select id="status" aria-label="Filter by engagement"><option value="">Every turn</option><option value="engaged">Engaged</option><option value="selected">Selected, not engaged</option><option value="fallback">Fallback</option><option value="delegated">Delegated runs</option></select>
+        <button id="refresh" class="btn" type="button">Refresh</button>
+      </div>
+      <div class="log-cols" aria-hidden="true"><span>Time</span><span>Gear</span><span>Engagement</span><span>Host</span><span>Jev</span><span>Prompt</span></div>
+      <p id="error" class="error" role="alert" hidden></p>
+      <div id="runs" class="runs"></div>
+      <p id="announce" class="sr-only" aria-live="polite"></p>
+    </section>
+  </main>
+
   <script src="/static/lineage.js"></script>
   <script src="/static/app.js"></script>
 </body>

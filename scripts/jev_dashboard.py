@@ -21,7 +21,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
+PROXY_PORT = int(os.environ.get("JEV_EFFORT_PROXY_PORT") or 8791)
+TURN_SESSION_RE = re.compile(r"-effort-([0-9a-f]{8})$")
 HERE = Path(__file__).resolve().parent.parent
 STATIC_ROOT = HERE / "dashboard"
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,160}$")
@@ -196,6 +198,65 @@ def normalize_run(raw: object, path: Path, include_content: bool = False) -> dic
     }
 
 
+def read_applied_log(path: Path, limit: int = 20000) -> list[dict[str, object]]:
+    """The effort proxy's per-request log: session prefix, level sent, and whether it changed the CLI's value."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()[-limit:]
+    except OSError:
+        return []
+    entries = []
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict) and isinstance(row.get("session"), str) and isinstance(row.get("effort"), str):
+            entries.append({"t": safe_number(row.get("t")), "session": row["session"][:8],
+                            "effort": scrub(row["effort"], 20), "changed": bool(row.get("changed"))})
+    return entries
+
+
+def attach_proxy_evidence(runs: list[dict[str, object]], entries: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Give each hook turn the proxy requests that followed it in the same session, until that session's next turn."""
+    turns: dict[str, list[tuple[float, dict[str, object]]]] = {}
+    for run in runs:
+        match = TURN_SESSION_RE.search(str(run.get("run_id", "")))
+        if run.get("mode") != "turn_effort" or not match:
+            continue
+        try:
+            started = datetime.fromisoformat(str(run.get("started_at"))).timestamp()
+        except ValueError:
+            continue
+        turns.setdefault(match[1], []).append((started, run))
+    counts: dict[int, dict[str, object]] = {}
+    for items in turns.values():
+        items.sort(key=lambda item: item[0])
+    for entry in entries:
+        items = turns.get(str(entry["session"]))
+        owner = None
+        for started, run in items or []:
+            if started <= float(entry["t"]) + 1:  # clocks agree; 1s covers rounding
+                owner = run
+        if owner is None:
+            continue
+        proof = counts.setdefault(id(owner), {"requests": 0, "changed": 0, "efforts": {}})
+        proof["requests"] += 1
+        proof["changed"] += int(bool(entry["changed"]))
+        proof["efforts"][entry["effort"]] = proof["efforts"].get(entry["effort"], 0) + 1
+    tracked = {id(run) for items in turns.values() for _, run in items}
+    empty = {"requests": 0, "changed": 0, "efforts": {}}
+    # copies, never the cached records; a turn with no proxied request gets an explicit zero
+    return [{**run, "proxy": counts.get(id(run), empty)} if id(run) in tracked else run for run in runs]
+
+
+def proxy_listening(port: int = PROXY_PORT) -> bool:
+    try:
+        socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+        return True
+    except OSError:
+        return False
+
+
 class RunStore:
     def __init__(self, root: Path, max_runs: int = 500, include_content: bool = False):
         self.root = root.expanduser().resolve()
@@ -252,7 +313,8 @@ class RunStore:
         }
 
     def list(self) -> list[dict[str, object]]:
-        return [self.read_path(path) for path in self._paths()]
+        return attach_proxy_evidence([self.read_path(path) for path in self._paths()],
+                                     read_applied_log(self.root.parent / "effort" / "applied.log"))
 
     def get(self, run_id: str) -> dict[str, object] | None:
         if not RUN_ID_RE.fullmatch(run_id):
@@ -411,7 +473,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Frame-Options", "DENY")
-        self.send_header("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:")
+        self.send_header("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; connect-src 'self'; img-src 'self' data:")
         self.end_headers()
 
     def _send(self, status: int, body: bytes, content_type: str) -> None:
@@ -437,7 +499,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
         if path == "/api/health":
-            self._json({"version": VERSION, "runs_dir": str(self.server.store.root), "run_count": len(self.server.store._paths())})
+            self._json({"version": VERSION, "runs_dir": str(self.server.store.root), "run_count": len(self.server.store._paths()),
+                        "proxy": {"port": PROXY_PORT, "listening": proxy_listening()}})
             return
         if path == "/api/config":
             try:
@@ -475,7 +538,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not target.is_file():
             self._json({"error": "Not found"}, 404)
             return
-        types = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8"}
+        types = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+                 ".woff2": "font/woff2", ".txt": "text/plain; charset=utf-8"}
         self._send(200, target.read_bytes(), types.get(target.suffix, "application/octet-stream"))
 
     def do_PUT(self) -> None:  # noqa: N802
