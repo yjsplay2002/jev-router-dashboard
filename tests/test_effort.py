@@ -107,12 +107,21 @@ class HookTests(unittest.TestCase):
         (self.home / ".env").write_text("TYPESAFE_API_KEY=test-key\n", encoding="utf-8")
         self._env = os.environ.get("JEV_ROUTER_HOME")
         os.environ["JEV_ROUTER_HOME"] = str(self.home)
+        self._base = os.environ.pop("ANTHROPIC_BASE_URL", None)  # a real proxy setup must not leak in
+        self._codex = os.environ.get("CODEX_HOME")
+        os.environ["CODEX_HOME"] = str(self.home)  # no config.toml here, so Codex is not proxied
 
     def tearDown(self):
         if self._env is None:
             os.environ.pop("JEV_ROUTER_HOME", None)
         else:
             os.environ["JEV_ROUTER_HOME"] = self._env
+        if self._base is not None:
+            os.environ["ANTHROPIC_BASE_URL"] = self._base
+        if self._codex is None:
+            os.environ.pop("CODEX_HOME", None)
+        else:
+            os.environ["CODEX_HOME"] = self._codex
         self.temp.cleanup()
 
     def invoke(self, event, provider="claude", choice="high"):
@@ -168,34 +177,87 @@ class HookTests(unittest.TestCase):
             os.environ.pop("JEV_ROUTER_CHILD")
         self.assertEqual((code, out), (0, ""))
 
-    def enable_auto_apply(self):
-        (self.home / "config.json").write_text(json.dumps({**CONFIG, "auto_apply_effort": True}), encoding="utf-8")
-        claude = self.home / "settings.json"
-        claude.write_text(json.dumps({"effortLevel": "low", "theme": "dark"}), encoding="utf-8")
-        codex = self.home / "config.toml"
-        codex.write_bytes(b'model = "gpt"\nmodel_reasoning_effort = "low"\n\n[profiles.x]\nmodel_reasoning_effort = "low"\n')
-        self.hook.SETTINGS = {"claude": claude, "codex": codex}
-        return claude, codex
-
-    def test_auto_apply_writes_the_routed_level_into_host_settings(self):
-        claude, codex = self.enable_auto_apply()
+    def test_behind_the_proxy_the_routed_level_is_handed_to_this_prompt(self):
         sys.argv = ["hook", "claude"]
-        _, out, _ = self.invoke({"prompt": "trace why the migration drops rows"}, choice="high")
-        self.assertEqual(json.loads(claude.read_text(encoding="utf-8")), {"effortLevel": "high", "theme": "dark"})
-        self.assertIn("written to settings.json", json.loads(out)["systemMessage"])
-        sys.argv = ["hook", "codex"]
-        self.invoke({"prompt": "trace why the migration drops rows"}, choice="medium")
-        # only the top-level key changes, and LF line endings survive on Windows
-        self.assertEqual(codex.read_bytes(),
-                         b'model = "gpt"\nmodel_reasoning_effort = "medium"\n\n[profiles.x]\nmodel_reasoning_effort = "low"\n')
+        self.hook.ensure_proxy = lambda: None  # the proxy process itself is not under test here
+        os.environ["ANTHROPIC_BASE_URL"] = self.hook.PROXY_URL
+        try:
+            _, out, _ = self.invoke({"prompt": "trace why the migration drops rows", "session_id": "abc-123"})
+            self.assertEqual((self.home / "effort" / "abc-123").read_text(encoding="utf-8"), "high")
+            self.assertIn("applied to this prompt", json.loads(out)["systemMessage"])
+            (self.home / ".env").write_text("", encoding="utf-8")  # Jev cannot answer: no stale level survives
+            _, out, _ = self.invoke({"prompt": "next turn", "session_id": "abc-123"})
+            self.assertFalse((self.home / "effort" / "abc-123").exists())
+            self.assertIn("apply: /effort", json.loads(out)["systemMessage"])
+        finally:
+            os.environ.pop("ANTHROPIC_BASE_URL")
 
-    def test_auto_apply_leaves_settings_alone_when_jev_did_not_answer(self):
-        claude, _ = self.enable_auto_apply()
+    def test_without_the_proxy_no_level_file_is_written(self):
         sys.argv = ["hook", "claude"]
-        (self.home / ".env").write_text("", encoding="utf-8")
-        _, out, _ = self.invoke({"prompt": "trace why the migration drops rows"})
-        self.assertEqual(json.loads(claude.read_text(encoding="utf-8"))["effortLevel"], "low")
-        self.assertIn("apply: /effort", json.loads(out)["systemMessage"])
+        os.environ.pop("ANTHROPIC_BASE_URL", None)
+        self.invoke({"prompt": "trace why the migration drops rows", "session_id": "abc-123"})
+        self.assertFalse((self.home / "effort").exists())
+
+
+class ProxyTests(unittest.TestCase):
+    """The proxy may only change output_config.effort, and only to a configured level."""
+
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location("jev_effort_proxy", ROOT / "scripts" / "jev_effort_proxy.py")
+        self.proxy = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.proxy)
+        self.temp = tempfile.TemporaryDirectory()
+        home = Path(self.temp.name)
+        (home / "config.json").write_text(json.dumps(CONFIG), encoding="utf-8")
+        (home / "effort").mkdir()
+        (home / "effort" / "sess-1").write_text("high", encoding="utf-8")
+        (home / "effort" / "sess-2").write_text("ultra", encoding="utf-8")
+        self._env = os.environ.get("JEV_ROUTER_HOME")
+        os.environ["JEV_ROUTER_HOME"] = str(home)
+
+    def tearDown(self):
+        if self._env is None:
+            os.environ.pop("JEV_ROUTER_HOME", None)
+        else:
+            os.environ["JEV_ROUTER_HOME"] = self._env
+        self.temp.cleanup()
+
+    def test_only_configured_levels_for_known_sessions_are_routed(self):
+        self.assertEqual(self.proxy.routed_effort("sess-1"), "high")
+        self.assertIsNone(self.proxy.routed_effort("sess-2"))  # not in efforts
+        self.assertIsNone(self.proxy.routed_effort("missing"))
+        self.assertIsNone(self.proxy.routed_effort("../config.json"))
+
+    def test_rewrite_touches_only_an_effort_the_cli_already_sent(self):
+        body = json.dumps({"model": "claude-x", "output_config": {"effort": "medium"}, "messages": []}).encode()
+        out = json.loads(self.proxy.rewrite(body, "high"))
+        self.assertEqual(out, {"model": "claude-x", "output_config": {"effort": "high"}, "messages": []})
+        no_effort = json.dumps({"model": "claude-haiku", "messages": []}).encode()
+        self.assertEqual(self.proxy.rewrite(no_effort, "high"), no_effort)
+        self.assertEqual(self.proxy.rewrite(body, None), body)
+        self.assertEqual(self.proxy.rewrite(b"not json", "high"), b"not json")
+        codex = json.dumps({"model": "gpt-x", "reasoning": {"effort": "medium", "context": "all_turns"}}).encode()
+        self.assertEqual(json.loads(self.proxy.rewrite(codex, "low", "reasoning"))["reasoning"],
+                         {"effort": "low", "context": "all_turns"})
+
+    def test_codex_is_detected_only_when_config_selects_the_jev_provider(self):
+        spec = importlib.util.spec_from_file_location("jev_effort_hook", ROOT / "scripts" / "jev_effort_hook.py")
+        hook = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hook)
+        home = Path(os.environ["JEV_ROUTER_HOME"])
+        saved = os.environ.get("CODEX_HOME")
+        os.environ["CODEX_HOME"] = str(home)
+        try:
+            (home / "config.toml").write_text('model = "x"\n[profiles.a]\nmodel_provider = "jev"\n', encoding="utf-8")
+            self.assertFalse(hook.proxy_in_use("codex"))  # only the top-level key counts
+            (home / "config.toml").write_text('model_provider = "jev"\n[model_providers.jev]\n', encoding="utf-8")
+            self.assertTrue(hook.proxy_in_use("codex"))
+        finally:
+            if saved is None:
+                os.environ.pop("CODEX_HOME", None)
+            else:
+                os.environ["CODEX_HOME"] = saved
+
 
 if __name__ == "__main__":
     unittest.main()

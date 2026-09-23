@@ -2,16 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """UserPromptSubmit hook: route this turn's reasoning effort, in the same session.
 
-No subagent, no proxy, no model change. The hook reads the prompt the user just
-submitted, asks Jev once for the minimum sufficient effort under a 1.0 second
-wall-clock cap, shows the decision, and tells the model to work at that depth.
+No subagent, no model change. The hook reads the prompt the user just submitted,
+asks Jev once for the minimum sufficient effort under a 1.0 second wall-clock cap,
+shows the decision, and tells the model to work at that depth.
 
-No host lets a hook set the effort parameter itself, so the apply step is the
-host's own command and the hook prints it ready to use. The behavioural half
-(`additionalContext`) is what works on all three hosts today. With
-`"auto_apply_effort": true` in config.json the hook instead writes a routed level
-into the host's own settings file (Claude `effortLevel`, Codex
-`model_reasoning_effort`), which the host reads on a later turn or session.
+No host lets a hook set the effort parameter itself. On Claude Code the numeric
+level is applied to this very prompt by `jev_effort_proxy.py`: when
+ANTHROPIC_BASE_URL points at it, the hook starts it if needed and writes the
+routed level to `<router home>/effort/<session id>`, which the proxy puts on the
+turn's requests. Elsewhere the hook prints the host's own apply command.
 
 The hook never blocks a turn: any failure exits 0 with no output.
 """
@@ -20,24 +19,23 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
+import subprocess
 import sys
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import jev_effort  # noqa: E402 - sibling module, loaded after sys.path is set
+import jev_effort_proxy  # noqa: E402
 
 # How each host applies an effort level mid-session. None of them accept it from a hook.
 APPLY_HINT = {
     "claude": "/effort {effort}",
     "grok": "/effort {effort}",
     "codex": "Alt+. / Alt+, (or /model)",
-}
-# Where each host keeps its default effort. Grok has no file-based setting.
-SETTINGS = {
-    "claude": Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json",
-    "codex": Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "config.toml",
 }
 DEPTH = {
     "low": "Answer directly. Do not explore alternatives or restate the problem.",
@@ -46,15 +44,68 @@ DEPTH = {
     "xhigh": "Treat a wrong answer as expensive: verify every assumption against primary sources before acting.",
     "max": "Exhaust the reasoning: verify every assumption, enumerate failure modes, prove the conclusion.",
 }
+PROXY_URL = f"http://127.0.0.1:{jev_effort_proxy.PORT}"
 
 
-def write_record(result: dict[str, object], prompt: str, provider: str, session: str) -> None:
+def proxy_in_use(provider: str) -> bool:
+    """Claude: ANTHROPIC_BASE_URL is the proxy. Codex: config.toml selects the `jev` model provider."""
+    if provider == "claude":
+        return os.environ.get("ANTHROPIC_BASE_URL", "").rstrip("/") == PROXY_URL
+    if provider != "codex":
+        return False
+    path = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "config.toml"
+    try:
+        top = re.split(r"^\[", path.read_text(encoding="utf-8"), maxsplit=1, flags=re.M)[0]
+    except OSError:
+        return False
+    return re.search(r'^model_provider\s*=\s*"jev"\s*$', top, re.M) is not None
+
+
+def proxy_listening() -> bool:
+    try:
+        socket.create_connection(("127.0.0.1", jev_effort_proxy.PORT), timeout=0.2).close()
+        return True
+    except OSError:
+        return False
+
+
+def ensure_proxy() -> None:
+    """Every API call of the session goes through the proxy, so it must be up before the first one."""
+    if proxy_listening():
+        return
+    flags = 0x00000008 | 0x00000200 | 0x08000000 if os.name == "nt" else 0  # detached, new group, no window
+    subprocess.Popen([sys.executable, str(Path(jev_effort_proxy.__file__).resolve())],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     creationflags=flags, start_new_session=os.name != "nt", close_fds=True)
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and not proxy_listening():
+        time.sleep(0.05)
+
+
+def set_turn_effort(session: str, effort: str | None) -> bool:
+    """Point this session's upcoming requests at `effort`; None hands the level back to the CLI."""
+    if not session or not session.replace("-", "").isalnum():
+        return False
+    path = jev_effort.router_home() / "effort" / session
+    if effort is None:
+        path.unlink(missing_ok=True)
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".{session}.{os.getpid()}.tmp")
+    temp.write_text(effort, encoding="utf-8")
+    os.replace(temp, path)
+    return True
+
+
+def write_record(result: dict[str, object], prompt: str, provider: str, session: str, applied: bool) -> None:
     """One run record per routed turn, in the schema the dashboard already reads."""
     home = jev_effort.router_home()
     stamp = datetime.now(timezone.utc)
     run_id = f"{stamp:%Y%m%dT%H%M%SZ}-effort-{(session or uuid.uuid4().hex)[:8]}"
     directory = home / "runs" / run_id
     fragment = jev_effort.record(result)
+    outcome = ("applied to this prompt's requests by the effort proxy" if applied
+               else "shown to the model; the numeric level was not applied")
     record = {
         "run_id": run_id,
         "mode": "turn_effort",
@@ -77,7 +128,7 @@ def write_record(result: dict[str, object], prompt: str, provider: str, session:
                 "provider": provider,
                 "model_evidence_source": "user_prompt_submit_hook",
                 "elapsed_seconds": result["elapsed_seconds"],
-                "result": f"effort {result['effort']} applied to the parent turn; model inherited",
+                "result": f"effort {result['effort']} {outcome}; model inherited",
             },
         }],
     }
@@ -88,45 +139,13 @@ def write_record(result: dict[str, object], prompt: str, provider: str, session:
     (directory / "run.json").write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def replace_atomically(path: Path, text: str) -> None:
-    temp = path.with_name(f".{path.name}.jev-{os.getpid()}.tmp")
-    temp.write_text(text, encoding="utf-8", newline="")  # keep the file's own line endings
-    os.replace(temp, path)
-
-
-def apply_effort(provider: str, effort: str) -> bool:
-    """Write the routed level into the host's settings file; True only if the file now holds it."""
-    path = SETTINGS.get(provider)
-    if path is None or not path.is_file():
-        return False
-    with path.open(encoding="utf-8", newline="") as handle:
-        text = handle.read()
-    eol = "\r\n" if "\r\n" in text else "\n"
-    if provider == "claude":
-        settings = json.loads(text)
-        if not isinstance(settings, dict):
-            return False
-        if settings.get("effortLevel") != effort:
-            settings["effortLevel"] = effort
-            replace_atomically(path, json.dumps(settings, ensure_ascii=False, indent=2).replace("\n", eol) + eol)
-        return True
-    # Codex: only the top-level key, which sits before the first [table] header.
-    table = re.search(r"^\[", text, re.M)
-    cut = table.start() if table else len(text)
-    head, tail = text[:cut], text[cut:]
-    line = f'model_reasoning_effort = "{effort}"'
-    key = re.compile(r"^model_reasoning_effort[ \t]*=[^\r\n]*", re.M)
-    head = key.sub(line, head, count=1) if key.search(head) else f"{line}{eol}{head}"
-    new_text = head + tail
-    if new_text != text:
-        replace_atomically(path, new_text)
-    return True
-
-
 def main() -> int:
-    if os.environ.get("JEV_ROUTER_CHILD") == "1":
-        return 0
     provider = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] in jev_effort.PROVIDERS else "codex"
+    proxied = proxy_in_use(provider)
+    if proxied:
+        ensure_proxy()  # before any early return: slash commands and child sessions call the API too
+    if "--session-start" in sys.argv or os.environ.get("JEV_ROUTER_CHILD") == "1":
+        return 0
     for stream in (sys.stdin, sys.stdout, sys.stderr):
         try:  # a Korean prompt on a cp949 console must not silently kill the hook
             stream.reconfigure(encoding="utf-8", errors="replace")
@@ -143,16 +162,19 @@ def main() -> int:
     home = jev_effort.router_home()
     config = jev_effort.read_config(home / "config.json")
     result = jev_effort.build(prompt, provider, config, jev_effort.read_env(home / ".env"), 1.0)
+    session = str(event.get("session_id") or "")
 
-    hint = APPLY_HINT.get(provider, "/effort {effort}").format(effort=result["effort"])
-    message = f"{jev_effort.announce(result)} -> apply: {hint}"
-    if config.get("auto_apply_effort") is True and result["routed"]:
-        try:
-            if apply_effort(provider, str(result["effort"])):
-                message = (f"{jev_effort.announce(result)} -> written to {SETTINGS[provider].name}; "
-                           "takes effect when the host rereads it")
-        except (OSError, ValueError):
-            pass  # an unreadable settings file keeps the printed command
+    applied = False
+    if proxied:
+        try:  # a fallback turn clears the file so a stale level never outlives its turn
+            applied = set_turn_effort(session, str(result["effort"]) if result["routed"] else None)
+        except OSError:
+            applied = False
+    if applied:
+        message = f"{jev_effort.announce(result)} -> applied to this prompt"
+    else:
+        hint = APPLY_HINT.get(provider, "/effort {effort}").format(effort=result["effort"])
+        message = f"{jev_effort.announce(result)} -> apply: {hint}"
     context = (f"Routed effort for this turn: {result['effort']} "
                f"({'jev' if result['routed'] else 'your configured default'}). "
                f"{DEPTH.get(str(result['effort']), '')} "
@@ -160,7 +182,7 @@ def main() -> int:
                "This note is in English only for the model: reply in the language of the user's prompt.")
 
     try:
-        write_record(result, prompt[:12000], provider, str(event.get("session_id") or ""))
+        write_record(result, prompt[:12000], provider, session, applied)
     except OSError:
         pass  # a record is evidence, not a precondition
 
