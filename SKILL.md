@@ -19,27 +19,25 @@ Determine `origin_provider` from the actual parent runtime, not task text, a rep
 | --- | --- |
 | Codex | Only OpenAI/Codex models exposed by this host |
 | Claude | Only Anthropic/Claude models exposed by this host |
-| Grok | Only xAI/Grok models exposed by this host |
 
 Inspect the live native spawn tool schema for an effort parameter; the model field is left alone so the parent's model is inherited. Use trusted host metadata for provider membership, not arbitrary model names or worker claims. A custom agent whose provider is unknown is ineligible. A host that exposes no effort parameter still routes usefully through parallelism and compact context: dispatch, omit effort, and record that effort control was unavailable. Never change providers on failure, low confidence or missing capacity. If origin or inherited provider cannot be established, work directly in the parent.
 
-**Execution is native-tool-only.** Call the host's exposed subagent tool directly. Do not launch `jev-router run/plan/benchmark/shadow`, `codex`, `claude`, `grok`, a subprocess, terminal worker, or model-generation API as a substitute. The single permitted external call is one bounded Jev effort decision through `scripts/jev_effort.py` or the hook that wraps it, capped at 1.0 second of wall clock. No other CLI, classifier, or generation API may select a route. The loopback effort proxy only copies the hook's decision onto the host request; do not start one yourself. The parent selects locally from current host capabilities. Old CLI configuration and cross-provider fallbacks do not apply.
+**Execution is native-tool-only.** Call the host's exposed subagent tool directly. Do not launch `jev-router run/plan/benchmark/shadow`, `codex`, `claude`, a subprocess, terminal worker, or model-generation API as a substitute. The single permitted external call is one bounded Jev effort decision through `scripts/jev_effort.py` or the hook that wraps it, capped at 1.0 second of wall clock. No other CLI, classifier, or generation API may select a route. The loopback effort proxy only copies the hook's decision onto the host request; do not start one yourself. The parent selects locally from current host capabilities. Old CLI configuration and cross-provider fallbacks do not apply.
 
 - Codex: use `collaboration.spawn_agent` when exposed, or the actual host's equivalent native `spawn_agent`. Pass only supported fields. With `fork_turns`, prefer `"none"` and a self-contained prompt. Full-history forks may force inheritance and forbid overrides; honor the schema.
 - Claude: use the native Agent/Task facility **only if exposed**, choosing only supported Claude options. Do not assume either tool name or parameter exists.
-- Grok: use its native subagent facility **only if exposed**, choosing only supported Grok options. Do not invent a tool or simulate one with Grok CLI.
 
 If native spawning is missing, continue directly and report `native_subagents_unavailable`. If overrides are missing but same-provider inheritance is established, inherit or work directly. Never fall back to a CLI. Ordinary shell tools remain usable for assigned coding/testing work; the prohibition concerns routing and worker launch.
 
 ## Per-turn effort routing (the default path)
 
-Effort routing happens in the session the user is already in. No subagent and no model change. The `UserPromptSubmit` hook (`scripts/jev_effort_hook.py`, installed in Claude's `settings.json`, Codex's `hooks.json` and `~/.grok/hooks/jev-effort.json`) runs before the turn, asks Jev once under a 1.0 second wall-clock cap, and returns a visible decision line plus an `additionalContext` instruction telling you what depth to work at.
+Effort routing happens in the session the user is already in. No subagent and no model change. The `UserPromptSubmit` hook (`scripts/jev_effort_hook.py`, installed in Claude's `settings.json` and Codex's `hooks.json`) runs before the turn, asks Jev once under a 1.0 second wall-clock cap, and returns a visible decision line plus an `additionalContext` instruction telling you what depth to work at.
 
 **Honour the routed effort in the turn you are running.** `low` means answer directly without exploring alternatives; `high` means trace the real flow and verify before acting. That behavioural change is the part that works on every host today.
 
 On Claude and Codex the numeric level is applied to this same prompt by `scripts/jev_effort_proxy.py`, which the hook starts if it is not already listening. Claude sends API traffic there through `ANTHROPIC_BASE_URL=http://127.0.0.1:8791`; a SessionStart hook starts the proxy before the first request. Codex sends it through the `jev` model provider at `http://127.0.0.1:8791/codex`. The hook writes `<router home>/effort/<session id>` before the request. The proxy changes only `output_config.effort` (Claude) or `reasoning.effort` (Codex), and only when the CLI already sent an effort and the routed level is one of the configured `efforts`. It never changes the model. When Jev does not answer, the hook removes that file and the CLI's own effort passes through. A hook line that says `applied to this prompt` means the numeric level was handed to this prompt's requests. Do not claim that unless the line says so.
 
-Grok has no request-rewrite path. The hook prints `/effort <level>`. Do not claim the numeric level was applied unless the user ran it. Codex has no skill-scoped effort override yet (openai/codex#22908) and Claude's `effort:` frontmatter is reported as having no runtime effect (anthropics/claude-code#69267). Those are not the path this install uses.
+Codex has no skill-scoped effort override yet (openai/codex#22908) and Claude's `effort:` frontmatter is reported as having no runtime effect (anthropics/claude-code#69267). Those are not the path this install uses. Only Claude and Codex are supported; the hook exits without routing for any other host argument.
 
 Ask Jev by hand only when the hook did not run, or for a delegated task:
 
@@ -59,7 +57,7 @@ Never delegate from a bounded child, an explicitly marked child, or `JEV_ROUTER_
 
 ## Per-provider fallback effort
 
-Before a fallback decision, read only `native_fallbacks` from `$JEV_ROUTER_HOME/config.json` when that directory override is set, otherwise `~/.config/jev-router/config.json`. Do not display the full configuration or read credential files. The dashboard saves independent entries: `{"native_fallbacks":{"codex":{"effort":"medium"},"claude":{"effort":null},"grok":{"effort":null}}}`. An effort string sets that provider's level; null clears it. `jev_effort.py` and the hook already read this file, so the fallback is applied for you; read it directly only to explain a decision.
+Before a fallback decision, read only `native_fallbacks` from `$JEV_ROUTER_HOME/config.json` when that directory override is set, otherwise `~/.config/jev-router/config.json`. Do not display the full configuration or read credential files. The dashboard saves independent entries: `{"native_fallbacks":{"codex":{"effort":"medium"},"claude":{"effort":null}}}`. An effort string sets that provider's level; null clears it. `jev_effort.py` and the hook already read this file, so the fallback is applied for you; read it directly only to explain a decision.
 
 Consult only the entry keyed by the actual `origin_provider`. Valid levels are the `efforts` list in the same config. Ignore legacy `fallback_provider`, `fallback_model` and `fallback_effort`, and never import them. An unset level, an unreadable configuration or an unavailable native tool means direct parent fallback with the reason disclosed. Never use another provider's entry, and never substitute a model for a missing effort.
 
@@ -73,7 +71,7 @@ Consult only the entry keyed by the actual `origin_provider`. Valid levels are t
 
 ## Evidence and measurement
 
-Native tool responses and host telemetry are primary evidence. The hook writes one record per turn by itself, including turns where Jev did not answer. Its `requested_effort` is the routed (or fallback) level. The record's result text says whether the effort proxy applied that level to this prompt. On Grok, `requested_effort` is not proof the user ran `/effort`. For substantive delegation, save a compact local record under `~/.config/jev-router/runs/<unique-id>/run.json` when filesystem access is available; otherwise use the conversation tool trace and disclose that no file was written. Records may contain private prompts and paths; do not publish or commit them.
+Native tool responses and host telemetry are primary evidence. The hook writes one record per turn by itself, including turns where Jev did not answer. Its `requested_effort` is the routed (or fallback) level. The record's result text says whether the effort proxy applied that level to this prompt. For substantive delegation, save a compact local record under `~/.config/jev-router/runs/<unique-id>/run.json` when filesystem access is available; otherwise use the conversation tool trace and disclose that no file was written. Records may contain private prompts and paths; do not publish or commit them.
 
 Write the record as UTF-8 (a Python `open(..., encoding="utf-8")` write, or `Out-File -Encoding utf8`; never PowerShell `>` or `Set-Content` without `-Encoding utf8`, which mangles non-ASCII prompts) and use exactly these field names, because the bundled dashboard reads only these. Do not rename, nest differently or invent alternatives (`workers`, `parent_identity`, `recorded_at` are not read). Copy this shape and fill it:
 
@@ -85,7 +83,7 @@ Write the record as UTF-8 (a Python `open(..., encoding="utf-8")` write, or `Out
   "status": "completed | failed | partial",
   "started_at": "<ISO-8601 with offset>",
   "elapsed_seconds": 0,
-  "origin_provider": "codex | claude | grok",
+  "origin_provider": "codex | claude",
   "parent_agent": "<known parent identity, else \"\">",
   "user_prompt": "<original instruction, verbatim>",
   "tasks": [

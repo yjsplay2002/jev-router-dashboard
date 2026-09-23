@@ -2,7 +2,7 @@
 
 [한국어](README.ko.md)
 
-A skill for Claude Code, Codex and Grok that picks the reasoning effort for each turn with Jev, plus a local dashboard for the records it leaves. **The model is never routed.** Switching models discards the host's prompt cache, which costs more than a cheaper model saves, so the model you selected is kept and only the effort changes.
+A skill for Claude Code and Codex that picks the reasoning effort for each turn with Jev, plus a local dashboard for the records it leaves. **The model is never routed.** Switching models discards the host's prompt cache, which costs more than a cheaper model saves, so the model you selected is kept and only the effort changes.
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
 ![Runtime](https://img.shields.io/badge/runtime-Python%203.10%2B-66f2c2)
@@ -35,13 +35,12 @@ python scripts/jev_effort.py "add a retry guard to the order submit path" --prov
 jev: effort=medium (jev-1.13.0, 0.58s, conf 95%) - model unchanged
 ```
 
-**Claude and Codex apply the numeric level to the same prompt.** No host accepts an effort parameter from a hook, so the hook writes `<router home>/effort/<session id>` and `jev_effort_proxy.py` sets the effort field on that session's requests before they leave the machine. The model field is not touched. Grok still prints `/effort <level>`; the numeric level changes there only if you run it.
+**Claude and Codex apply the numeric level to the same prompt.** No host accepts an effort parameter from a hook, so the hook writes `<router home>/effort/<session id>` and `jev_effort_proxy.py` sets the effort field on that session's requests before they leave the machine. The model field is not touched.
 
 | Host | How the request is steered | What the proxy sets |
 | --- | --- | --- |
 | Claude | `ANTHROPIC_BASE_URL=http://127.0.0.1:8791` in `settings.json`. A SessionStart hook starts the proxy. | `output_config.effort`, only if the CLI already sent one |
 | Codex | `model_provider = "jev"` with `base_url = "http://127.0.0.1:8791/codex"` | `reasoning.effort`, only if the CLI already sent one |
-| Grok | no rewrite path | the hook prints `/effort <level>` |
 
 The proxy rewrites a request only when the routed level is in the configured `efforts` list. If Jev does not answer, the hook deletes the session file and the CLI's own effort passes through. A visible line ending in `applied to this prompt` means this prompt's requests carried the routed level. Codex has no skill-scoped effort override (openai/codex#22908) and Claude's `effort:` frontmatter is reported as inert (anthropics/claude-code#69267); neither is required for this path. Prompt cache, measured 2026-09-23: on Claude, switching the effort between turns of one session kept reading the whole prefix from cache (only the new turn was written). On Codex the first turn in an effort level the session had not used yet read nothing from cache, while returning to a level used earlier hit it, so the cache appears to be kept per effort level there. A repeat run on the same day (one session each, `codex exec` + `resume`):
 
@@ -71,15 +70,14 @@ If that is not acceptable for a project, leave `TYPESAFE_API_KEY` unset or remov
 
 ## Install
 
-1. Copy the repository into the skill directory, e.g. `~/.claude/skills/jev-router` (Claude) and/or `~/.codex/skills/jev-router` (Codex). Grok's hook can point at either copy.
+1. Copy the repository into the skill directory, e.g. `~/.claude/skills/jev-router` (Claude) and/or `~/.codex/skills/jev-router` (Codex).
 2. Put the API key in `~/.config/jev-router/.env` as `TYPESAFE_API_KEY=...` (or `$JEV_ROUTER_HOME/.env`).
-3. Add a `UserPromptSubmit` hook. The last argument is the host (`claude`, `codex` or `grok`):
+3. Add a `UserPromptSubmit` hook. The last argument is the host (`claude` or `codex`):
 
    | Host | File |
    | --- | --- |
    | Claude | `~/.claude/settings.json` |
    | Codex | `~/.codex/hooks.json` |
-   | Grok | `~/.grok/hooks/jev-effort.json` |
 
    ```json
    {
@@ -118,14 +116,14 @@ Each turn is joined to the proxy's request log (`<router home>/effort/applied.lo
 | Selected, not engaged | Jev chose a level but no request of that turn passed the proxy, so the host's own setting ran. |
 | Fallback | Jev did not answer within the cap; the host's own setting ran. |
 
-Engagement is never inferred without log evidence. On Grok a turn is at most "Selected".
+Engagement is never inferred without log evidence.
 
 ### Per-provider fallback effort
 
 The **Default gear** panel sets the effort each provider uses when Jev does not answer in time. Each provider is saved separately; **Host's own setting** clears one. Levels come from the `efforts` list.
 
 ```json
-{"native_fallbacks":{"codex":{"effort":"medium"},"claude":{"effort":null},"grok":{"effort":null}}}
+{"native_fallbacks":{"codex":{"effort":"medium"},"claude":{"effort":null}}}
 ```
 
 `GET /api/config` returns the three entries plus `effort_options`. `PUT /api/config` accepts a partial `native_fallbacks` object and keeps omitted providers. Unknown providers, unknown levels and any attempt to set a model are rejected without writing. Other settings in the file are preserved.

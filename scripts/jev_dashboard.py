@@ -344,7 +344,7 @@ class RunStore:
 class ConfigStore:
     """Expose and update only the per-provider fallback effort in Jev's config."""
 
-    NATIVE_PROVIDERS = ("codex", "claude", "grok")
+    NATIVE_PROVIDERS = ("codex", "claude")
     DEFAULT_EFFORTS = ("low", "medium", "high")
 
     def __init__(self, path: Path, model_home: Path | None = None):

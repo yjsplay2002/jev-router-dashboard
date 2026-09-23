@@ -73,7 +73,6 @@ class DashboardTests(unittest.TestCase):
             "providers": {
                 "claude": {"enabled": True, "model": None},
                 "codex": {"enabled": True, "model": None},
-                "grok": {"enabled": False, "model": None},
             },
         }
         self.config_path.write_text(json.dumps(self.config), encoding="utf-8")
@@ -92,7 +91,7 @@ class DashboardTests(unittest.TestCase):
         task = self.run["tasks"][0]
         task["depends_on"] = ["prepare"]
         task["route"]["confidence"] = 73
-        task["route"]["probabilities"] = {"codex_medium": 73, "claude_medium": 12, "grok_medium": 2}
+        task["route"]["probabilities"] = {"codex_medium": 73, "claude_medium": 12, "codex_low": 2}
         run_file = self.root / self.run["run_id"] / "run.json"
         run_file.write_text(json.dumps(self.run), encoding="utf-8")
         normalized = dashboard.RunStore(self.root).list()[0]["tasks"][0]
@@ -257,20 +256,15 @@ class DashboardTests(unittest.TestCase):
         store = dashboard.ConfigStore(self.config_path, model_home=self.root)
         visible = store.public()
         self.assertEqual(visible["native_fallbacks"], {
-            "codex": {"effort": None}, "claude": {"effort": None}, "grok": {"effort": None},
+            "codex": {"effort": None}, "claude": {"effort": None},
         })
         self.assertEqual(store.update({"native_fallbacks": {"codex": {"effort": "high"}}})
                          ["native_fallbacks"]["codex"]["effort"], "high")
-        store.update({"native_fallbacks": {"claude": {"effort": "low"}}})
-        saved = store.update({"native_fallbacks": {"grok": {"effort": "medium"}}})
-        self.assertEqual(saved["native_fallbacks"], {
-            "codex": {"effort": "high"},
-            "claude": {"effort": "low"},
-            "grok": {"effort": "medium"},
-        })
-        reset = store.update({"native_fallbacks": {"claude": {"effort": ""}, "grok": {"effort": None}}})
+        saved = store.update({"native_fallbacks": {"claude": {"effort": "low"}}})
+        self.assertEqual(saved["native_fallbacks"], {"codex": {"effort": "high"}, "claude": {"effort": "low"}})
+        reset = store.update({"native_fallbacks": {"claude": {"effort": ""}}})
         self.assertIsNone(reset["native_fallbacks"]["claude"]["effort"])
-        self.assertIsNone(reset["native_fallbacks"]["grok"]["effort"])
+        self.assertEqual(reset["native_fallbacks"]["codex"]["effort"], "high")
         on_disk = json.loads(self.config_path.read_text(encoding="utf-8"))
         self.assertEqual(on_disk["fallback_provider"], "claude")
         self.assertEqual(on_disk["fallback_model"], "claude-default")
@@ -280,6 +274,7 @@ class DashboardTests(unittest.TestCase):
         store = dashboard.ConfigStore(self.config_path, model_home=self.root)
         invalid = [
             {"native_fallbacks": {"other": {"effort": "high"}}},
+            {"native_fallbacks": {"grok": {"effort": "high"}}},
             {"native_fallbacks": {"codex": {"effort": "extreme"}}},
             {"native_fallbacks": {"claude": {"effort": "gpt-6-astra"}}},
             {"native_fallbacks": {"codex": {"effort": 1}}},
@@ -300,12 +295,12 @@ class DashboardTests(unittest.TestCase):
         thread.start()
         base = f"http://127.0.0.1:{server.server_port}"
         try:
-            payload = json.dumps({"native_fallbacks": {"grok": {"effort": "low"}}}).encode("utf-8")
+            payload = json.dumps({"native_fallbacks": {"claude": {"effort": "low"}}}).encode("utf-8")
             request = urllib.request.Request(base + "/api/config", data=payload, method="PUT",
                                              headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(request) as response:
                 saved = json.load(response)
-            self.assertEqual(saved["native_fallbacks"]["grok"]["effort"], "low")
+            self.assertEqual(saved["native_fallbacks"]["claude"]["effort"], "low")
             self.assertNotIn("fallback_model", saved)
             on_disk = json.loads(self.config_path.read_text(encoding="utf-8"))
             self.assertEqual(on_disk["fallback_effort"], "high")

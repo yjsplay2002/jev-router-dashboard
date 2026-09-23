@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-Claude Code, Codex, Grok에서 턴마다 Jev로 추론 effort를 정해 주는 스킬과, 그 기록을 보는 로컬 대시보드입니다. **모델은 절대 라우팅하지 않습니다.** 모델을 바꾸면 호스트의 프롬프트 캐시가 버려지고, 그 비용이 더 싼 모델로 아끼는 금액보다 큽니다. 그래서 사용자가 고른 모델은 그대로 두고 effort만 바꿉니다.
+Claude Code와 Codex에서 턴마다 Jev로 추론 effort를 정해 주는 스킬과, 그 기록을 보는 로컬 대시보드입니다. **모델은 절대 라우팅하지 않습니다.** 모델을 바꾸면 호스트의 프롬프트 캐시가 버려지고, 그 비용이 더 싼 모델로 아끼는 금액보다 큽니다. 그래서 사용자가 고른 모델은 그대로 두고 effort만 바꿉니다.
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
 ![Runtime](https://img.shields.io/badge/runtime-Python%203.10%2B-66f2c2)
@@ -35,13 +35,12 @@ python scripts/jev_effort.py "add a retry guard to the order submit path" --prov
 jev: effort=medium (jev-1.13.0, 0.58s, conf 95%) - model unchanged
 ```
 
-**Claude와 Codex는 같은 프롬프트에 수치 effort를 실어 보냅니다.** 훅이 effort 값을 직접 받는 호스트는 없습니다. 그래서 훅이 `<router home>/effort/<session id>`에 값을 쓰고, `jev_effort_proxy.py`가 그 세션의 요청이 머신을 떠나기 전에 effort 필드만 바꿉니다. 모델 필드는 건드리지 않습니다. Grok은 여전히 `/effort <level>`을 출력하며, 그 명령을 실행해야 수치가 바뀝니다.
+**Claude와 Codex는 같은 프롬프트에 수치 effort를 실어 보냅니다.** 훅이 effort 값을 직접 받는 호스트는 없습니다. 그래서 훅이 `<router home>/effort/<session id>`에 값을 쓰고, `jev_effort_proxy.py`가 그 세션의 요청이 머신을 떠나기 전에 effort 필드만 바꿉니다. 모델 필드는 건드리지 않습니다.
 
 | 호스트 | 요청이 프록시로 가는 방법 | 프록시가 바꾸는 값 |
 | --- | --- | --- |
 | Claude | `settings.json`의 `ANTHROPIC_BASE_URL=http://127.0.0.1:8791`. SessionStart 훅이 프록시를 띄웁니다. | CLI가 이미 `output_config.effort`를 보냈을 때만 그 값 |
 | Codex | `model_provider = "jev"`, `base_url = "http://127.0.0.1:8791/codex"` | CLI가 이미 `reasoning.effort`를 보냈을 때만 그 값 |
-| Grok | 요청을 다시 쓰는 경로가 없음 | 훅이 `/effort <level>`을 출력 |
 
 라우팅된 값이 설정의 `efforts` 목록에 있을 때만 요청을 바꿉니다. Jev가 답하지 않으면 훅이 세션 파일을 지우고, CLI가 원래 보내려던 effort가 그대로 통과합니다. 화면에 `applied to this prompt`로 끝나면 이번 프롬프트의 요청에 라우팅된 값이 실렸다는 뜻입니다. Codex의 스킬 단위 effort 지정(openai/codex#22908)과 Claude의 `effort:` frontmatter(anthropics/claude-code#69267)는 이 경로에 필요 없습니다. 프롬프트 캐시 측정 결과(2026-09-23): Claude는 한 세션에서 턴마다 effort를 바꿔도 앞부분 전체를 캐시에서 읽었고 새 턴 분량만 새로 썼습니다. Codex는 그 세션에서 아직 쓰지 않은 effort로 바꾼 첫 턴에서 캐시를 전혀 읽지 못했고, 이전에 썼던 effort로 돌아가면 캐시를 읽었습니다. Codex 쪽 캐시는 effort별로 따로 유지되는 것으로 보입니다. 같은 날 다시 측정한 결과입니다(각 한 세션, `codex exec` + `resume`).
 
@@ -71,15 +70,14 @@ jev: effort=medium (jev-1.13.0, 0.58s, conf 95%) - model unchanged
 
 ## 설치
 
-1. 저장소를 스킬 디렉터리에 복사합니다. 예: `~/.claude/skills/jev-router`(Claude), `~/.codex/skills/jev-router`(Codex). Grok 훅은 둘 중 아무 복사본이나 가리키면 됩니다.
+1. 저장소를 스킬 디렉터리에 복사합니다. 예: `~/.claude/skills/jev-router`(Claude), `~/.codex/skills/jev-router`(Codex).
 2. `~/.config/jev-router/.env`(또는 `$JEV_ROUTER_HOME/.env`)에 `TYPESAFE_API_KEY=...`를 넣습니다.
-3. `UserPromptSubmit` 훅을 추가합니다. 마지막 인자는 호스트 이름(`claude`, `codex`, `grok`)입니다.
+3. `UserPromptSubmit` 훅을 추가합니다. 마지막 인자는 호스트 이름(`claude` 또는 `codex`)입니다.
 
    | 호스트 | 파일 |
    | --- | --- |
    | Claude | `~/.claude/settings.json` |
    | Codex | `~/.codex/hooks.json` |
-   | Grok | `~/.grok/hooks/jev-effort.json` |
 
    ```json
    {
@@ -118,14 +116,14 @@ python scripts/jev_dashboard.py --open   # http://127.0.0.1:8787
 | Selected, not engaged(선택만 됨) | Jev가 값을 골랐지만 그 턴의 요청이 프록시를 거치지 않아 호스트 자체 설정으로 실행됐습니다. |
 | Fallback | Jev가 제한 시간 안에 답하지 않아 호스트 자체 설정으로 실행됐습니다. |
 
-로그 근거 없이 체결됐다고 추정하지 않습니다. Grok의 턴은 최대 "선택만 됨"입니다.
+로그 근거 없이 체결됐다고 추정하지 않습니다.
 
 ### Provider별 fallback effort
 
 **Default gear** 패널에서 Jev가 제시간에 답하지 못했을 때 provider별로 쓸 effort를 정합니다. provider마다 따로 저장되며, **Host's own setting**을 고르면 해당 값을 지웁니다. 선택지는 `efforts` 목록에서 가져옵니다.
 
 ```json
-{"native_fallbacks":{"codex":{"effort":"medium"},"claude":{"effort":null},"grok":{"effort":null}}}
+{"native_fallbacks":{"codex":{"effort":"medium"},"claude":{"effort":null}}}
 ```
 
 `GET /api/config`는 세 항목과 `effort_options`를 돌려줍니다. `PUT /api/config`는 일부 provider만 담은 `native_fallbacks`도 받으며 빠진 provider는 그대로 둡니다. 알 수 없는 provider나 값, 모델을 지정하려는 요청은 아무것도 쓰지 않고 거부합니다. 파일의 다른 설정은 보존됩니다.

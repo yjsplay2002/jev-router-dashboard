@@ -3,7 +3,7 @@
 const state = { runs: [], efforts: ["low", "medium", "high"], query: "", provider: "", status: "", rows: new Map(), firstLoad: true, plateRun: null };
 const poll = { timer: null, inflight: null, delay: 2500, min: 2500, max: 30000 };
 const nativeState = { current: null, busy: true };
-const nativeProviders = ["codex", "claude", "grok"];
+const nativeProviders = ["codex", "claude"];
 const $ = (id) => document.getElementById(id);
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const fmt = (n) => new Intl.NumberFormat().format(Number(n || 0));

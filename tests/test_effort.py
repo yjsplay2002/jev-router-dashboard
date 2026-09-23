@@ -16,7 +16,7 @@ effort = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(effort)
 
 CONFIG = {"efforts": ["low", "medium", "high"], "judge_context_chars": 200,
-          "native_fallbacks": {"codex": {"effort": "medium"}, "claude": {"effort": None}, "grok": {"effort": None}}}
+          "native_fallbacks": {"codex": {"effort": "medium"}, "claude": {"effort": None}}}
 ENV = {"TYPESAFE_API_KEY": "test-key", "TYPESAFE_MODEL": "jev-latest"}
 
 
@@ -167,6 +167,12 @@ class HookTests(unittest.TestCase):
             code, out, _ = self.invoke({"prompt": prompt})
             self.assertEqual(code, 0)
             self.assertEqual(out, "")
+
+    def test_an_unsupported_host_is_never_routed_as_another_provider(self):
+        sys.argv = ["hook", "grok"]
+        code, out, _ = self.invoke({"prompt": "trace why the migration drops rows", "session_id": "abc-123"})
+        self.assertEqual((code, out), (0, ""))
+        self.assertFalse((self.home / "runs").exists())
 
     def test_a_child_turn_is_never_routed(self):
         sys.argv = ["hook", "claude"]

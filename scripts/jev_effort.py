@@ -28,7 +28,7 @@ API_URL = "https://api.typesafe.ai/v1/systemone"
 USER_AGENT = "jev-router/0.5 (+https://github.com/yjsplay2002/jev-router-dashboard)"
 DEFAULT_EFFORTS = ("low", "medium", "high")
 DEFAULT_EFFORT = "medium"
-PROVIDERS = ("codex", "claude", "grok")
+PROVIDERS = ("codex", "claude")
 EFFORT_CRITERIA = {
     "low": "Mechanical or fully specified work: apply a stated change, run a known command, extract or reformat given text.",
     "medium": "Ordinary engineering work: implement a scoped task, write focused tests, review a small diff.",

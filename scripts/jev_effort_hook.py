@@ -34,7 +34,6 @@ import jev_effort_proxy  # noqa: E402
 # How each host applies an effort level mid-session. None of them accept it from a hook.
 APPLY_HINT = {
     "claude": "/effort {effort}",
-    "grok": "/effort {effort}",
     "codex": "Alt+. / Alt+, (or /model)",
 }
 DEPTH = {
@@ -140,7 +139,9 @@ def write_record(result: dict[str, object], prompt: str, provider: str, session:
 
 
 def main() -> int:
-    provider = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] in jev_effort.PROVIDERS else "codex"
+    provider = sys.argv[1] if len(sys.argv) > 1 else "codex"
+    if provider not in jev_effort.PROVIDERS:
+        return 0  # an unsupported host (e.g. a leftover Grok hook) is never routed as another provider
     proxied = proxy_in_use(provider)
     if proxied:
         ensure_proxy()  # before any early return: slash commands and child sessions call the API too
