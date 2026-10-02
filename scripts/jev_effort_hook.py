@@ -161,10 +161,16 @@ def main() -> int:
     if not isinstance(prompt, str) or not prompt.strip() or prompt.lstrip().startswith("/"):
         return 0  # nothing to route: empty prompt, or a command the host handles itself
 
+    session = str(event.get("session_id") or "")
+    if proxied and jev_effort_proxy.bypassed():
+        set_turn_effort(session, None)  # the CLI's own effort; Jev is not called while upstream is failing
+        print(json.dumps({"continue": True,
+                          "systemMessage": "jev skipped: the effort proxy saw an upstream failure, using the CLI's effort"}))
+        return 0
+
     home = jev_effort.router_home()
     config = jev_effort.read_config(home / "config.json")
     result = jev_effort.build(prompt, provider, config, jev_effort.read_env(home / ".env"), 1.0)
-    session = str(event.get("session_id") or "")
 
     applied = False
     if proxied:

@@ -33,6 +33,7 @@ ROUTES = {
     "claude": ("api.anthropic.com", "", "x-claude-code-session-id", "output_config"),
     "codex": ("chatgpt.com", "/backend-api/codex", "session-id", "reasoning"),
 }
+BYPASS_SECONDS = 300  # after an upstream failure, Jev is skipped and requests go out as the CLI sent them
 HOP = {"host", "connection", "content-length", "transfer-encoding", "keep-alive", "proxy-connection"}
 
 
@@ -46,6 +47,27 @@ def routed_effort(session: str) -> str | None:
     except OSError:
         return None
     return level if level in jev_effort.allowed_efforts(jev_effort.read_config(home / "config.json")) else None
+
+
+def bypass_flag() -> Path:
+    return jev_effort.router_home() / "effort" / "upstream_failed"
+
+
+def bypassed() -> bool:
+    """True while a recent upstream failure has routing switched off."""
+    try:
+        return time.time() - bypass_flag().stat().st_mtime < BYPASS_SECONDS
+    except OSError:
+        return False
+
+
+def mark_upstream_failed() -> None:
+    try:
+        flag = bypass_flag()
+        flag.parent.mkdir(parents=True, exist_ok=True)
+        flag.write_text(str(round(time.time())), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def rewrite(body: bytes, level: str | None, field: str = "output_config") -> bytes:
@@ -134,24 +156,33 @@ class Handler(BaseHTTPRequestHandler):
         finished = False
         upstream = None
         try:
-            body = read_body(self)
+            body = original = read_body(self)
             codex = self.path == CODEX_PREFIX or self.path.startswith(CODEX_PREFIX + "/")
             host, prefix, session_header, field = ROUTES["codex" if codex else "claude"]
             path = prefix + (self.path[len(CODEX_PREFIX):] if codex else self.path)
             if self.command == "POST" and (path.startswith("/v1/messages") or path.endswith("/responses")):
                 session = self.headers.get(session_header, "")
-                level = routed_effort(session)
+                level = None if bypassed() else routed_effort(session)
                 new_body = rewrite(body, level, field)
                 if session:
                     note_applied(session, level, body, new_body, field)
                 body = new_body
             # ponytail: one upstream TLS connection per request; pool connections if the handshake shows up in latency
-            upstream = http.client.HTTPSConnection(host, timeout=900)
             headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP}
             headers["Host"] = host
-            headers["Content-Length"] = str(len(body))
-            upstream.request(self.command, path, body=body, headers=headers)
-            response = upstream.getresponse()
+            try:
+                upstream = http.client.HTTPSConnection(host, timeout=900)
+                headers["Content-Length"] = str(len(body))
+                upstream.request(self.command, path, body=body, headers=headers)
+                response = upstream.getresponse()
+            except Exception:
+                # Skip Jev from here on and resend once exactly as the CLI sent it; a second failure is the 502.
+                mark_upstream_failed()
+                upstream.close()
+                upstream = http.client.HTTPSConnection(host, timeout=900)
+                headers["Content-Length"] = str(len(original))
+                upstream.request(self.command, path, body=original, headers=headers)
+                response = upstream.getresponse()
             length = response.getheader("Content-Length")
             close = self.request_version != "HTTP/1.1" or "close" in self.headers.get("Connection", "").lower()
             self.close_connection = close

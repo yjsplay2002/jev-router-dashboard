@@ -212,6 +212,29 @@ class HookTests(unittest.TestCase):
         _, out, _ = self.invoke({"prompt": "rename a variable", "session_id": "s2"}, choice="extreme")
         self.assertNotIn("hookSpecificOutput", json.loads(out))
 
+    def test_after_an_upstream_failure_jev_is_skipped_and_the_cli_effort_stands(self):
+        sys.argv = ["hook", "claude"]
+        self.hook.ensure_proxy = lambda: None
+        os.environ["ANTHROPIC_BASE_URL"] = self.hook.PROXY_URL
+        (self.home / "effort").mkdir()
+        (self.home / "effort" / "abc-123").write_text("high", encoding="utf-8")
+        self.hook.jev_effort_proxy.mark_upstream_failed()
+        try:
+            self.hook.jev_effort.ask_jev = lambda *a, **k: self.fail("Jev must not be called")
+            sys.stdin = io.StringIO(json.dumps({"prompt": "trace it", "session_id": "abc-123"}))
+            sys.stdout = out = io.StringIO()
+            try:
+                self.assertEqual(self.hook.main(), 0)
+            finally:
+                sys.stdin, sys.stdout = sys.__stdin__, sys.__stdout__
+            self.assertIn("jev skipped", json.loads(out.getvalue())["systemMessage"])
+            self.assertFalse((self.home / "effort" / "abc-123").exists())
+            self.assertTrue(self.hook.jev_effort_proxy.bypassed())
+            os.utime(self.hook.jev_effort_proxy.bypass_flag(), (0, 0))  # an old failure no longer bypasses
+            self.assertFalse(self.hook.jev_effort_proxy.bypassed())
+        finally:
+            os.environ.pop("ANTHROPIC_BASE_URL")
+
     def test_without_the_proxy_no_level_file_is_written(self):
         sys.argv = ["hook", "claude"]
         os.environ.pop("ANTHROPIC_BASE_URL", None)
